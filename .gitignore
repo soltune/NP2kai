@@ -53,3 +53,8 @@ GEMINI.md
 AGENTS.md
 
 build_*/
+
+# macOS
+.DS_Store
+# tracked despite *.in above
+!wx/macos/Info.plist.in
