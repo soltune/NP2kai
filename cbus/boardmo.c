@@ -274,7 +274,7 @@ static void boardmo_mame_reset(void)
 		if (s_samplerate != soundcfg.rate)
 		{
 			YMF262Shutdown(g_mame_opl3[G_OPL3_INDEX]);
-			g_mame_opl3[G_OPL3_INDEX] = YMF262Init(BOARDMO_OPL3_CLOCK, soundcfg.rate);
+			g_mame_opl3[G_OPL3_INDEX] = YMF262Init(BOARDMO_OPL3_CLOCK, (soundcfg.rate ? soundcfg.rate : np2cfg.samplingrate));
 			s_samplerate = soundcfg.rate;
 		}
 		else
@@ -288,8 +288,8 @@ static void boardmo_mame_bind(void)
 {
 	if (!g_mame_opl3[G_OPL3_INDEX])
 	{
-		g_mame_opl3[G_OPL3_INDEX] = YMF262Init(BOARDMO_OPL3_CLOCK, np2cfg.samplingrate);
-		s_samplerate = np2cfg.samplingrate;
+		g_mame_opl3[G_OPL3_INDEX] = YMF262Init(BOARDMO_OPL3_CLOCK, (soundcfg.rate ? soundcfg.rate : np2cfg.samplingrate));
+		s_samplerate = soundcfg.rate;
 	}
 
 	if (g_opl3[G_OPL3_INDEX].userdata)

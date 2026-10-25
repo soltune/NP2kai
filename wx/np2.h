@@ -126,6 +126,12 @@ extern UINT8 changescreeninit;
 
 int findCdromDrive(void);
 
+/* Disk images given on the command line / by Finder before startup.
+ * Applied over the loaded config inside np2_initialize(). */
+void np2_addmedia(const char *path);
+void np2_applystartmedia(void);
+BOOL np2_isfdimage(const char *path);
+
 #ifdef __cplusplus
 extern "C" {
 #endif

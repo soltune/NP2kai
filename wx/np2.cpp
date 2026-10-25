@@ -70,7 +70,7 @@ NP2OSCFG np2oscfg = {
 	0,          /* resume */
 	0, 0, 0, 0, 0, /* statsave, toolwin, keydisp, softkbd, hostdrv_write */
 	0, 0, 1,    /* jastsnd, I286SAVE, xrollkey */
-	SNDDRV_SDL, /* snddrv */
+	SNDDRV_DEFAULT, /* snddrv */
 	{"",""},    /* MIDIDEV */
 #if defined(SUPPORT_SMPU98)
 	{"",""},    /* MIDIDEVA */
@@ -138,7 +138,7 @@ void np2oscfg_setdefault(void)
 	}
 
 	np2oscfg.mouse_move_ratio = 1;
-	np2oscfg.snddrv = SNDDRV_SDL;
+	np2oscfg.snddrv = SNDDRV_DEFAULT;
 
 	np2oscfg.winx = -1;
 	np2oscfg.winy = -1;
@@ -481,6 +481,9 @@ static void processwait(UINT cnt)
 		timing_setcount(0);
 		framecnt = 0;
 	} else {
+		/* keep the audio queue topped up between frames, so a short
+		 * buffer delay does not run dry while the thread sleeps */
+		soundmng_sync();
 		taskmng_sleep(1);
 	}
 }
@@ -555,6 +558,89 @@ void np2_exec(void)
 #endif
 }
 
+/* ---- startup media ---- */
+
+#define NP2_MAXSTARTMEDIA 8
+static char s_startmedia[NP2_MAXSTARTMEDIA][MAX_PATH];
+static int  s_startmedia_count = 0;
+
+void np2_addmedia(const char *path)
+{
+	if (s_startmedia_count < NP2_MAXSTARTMEDIA) {
+		milstr_ncpy(s_startmedia[s_startmedia_count++], path, MAX_PATH);
+	}
+}
+
+static BOOL hasext(const char *path, const char *const *exts)
+{
+	size_t len = strlen(path);
+	for (int i = 0; exts[i]; i++) {
+		size_t el = strlen(exts[i]);
+		if (len > el && strcasecmp(path + len - el, exts[i]) == 0) return TRUE;
+	}
+	return FALSE;
+}
+
+static const char *const hdimage_ext[] = {
+	".hdi", ".thd", ".nhd", ".vhd", ".sln", ".hdd", ".hdn", NULL
+};
+static const char *const cdimage_ext[] = {
+	".iso", ".cue", ".ccd", ".mds", ".nrg", NULL
+};
+
+/* Same classification as the SDL port: FD images fill drives 1..4,
+ * HD images take IDE/SASI HDD slots, CD images the first CD-ROM slot. */
+void np2_applystartmedia(void)
+{
+	int fd = 0;
+	UINT setmedia = 0;
+	for (int i = 0; i < s_startmedia_count; i++) {
+		const char *path = s_startmedia[i];
+		if (np2_isfdimage(path)) {
+			if (fd < 4) {
+				milstr_ncpy(np2cfg.fddfile[fd], path, MAX_PATH);
+				np2cfg.fddequip |= (UINT8)(1 << fd);
+				fd++;
+			}
+		}
+#if defined(SUPPORT_IDEIO)
+		else if (hasext(path, hdimage_ext)) {
+			for (int j = 0; j < 4; j++) {
+				if (!(setmedia & (1 << j)) && np2cfg.idetype[j] != SXSIDEV_CDROM) {
+					np2cfg.idetype[j] = SXSIDEV_HDD;
+					milstr_ncpy(np2cfg.sasihdd[j], path, MAX_PATH);
+					setmedia |= 1 << j;
+					break;
+				}
+			}
+		}
+		else if (hasext(path, cdimage_ext)) {
+			for (int j = 0; j < 4; j++) {
+				if (np2cfg.idetype[j] == SXSIDEV_CDROM) {
+					milstr_ncpy(np2cfg.idecd[j], path, MAX_PATH);
+					break;
+				}
+			}
+		}
+#else
+		else if (hasext(path, hdimage_ext)) {
+			for (int j = 0; j < 2; j++) {
+				if (!(setmedia & (1 << j))) {
+					milstr_ncpy(np2cfg.sasihdd[j], path, MAX_PATH);
+					setmedia |= 1 << j;
+					break;
+				}
+			}
+		}
+#endif
+	}
+	/* drives not given on the command line start empty */
+	if (fd > 0) {
+		for (int i = fd; i < 4; i++) np2cfg.fddfile[i][0] = '\0';
+	}
+	s_startmedia_count = 0;
+}
+
 /* ---- initialization / termination ---- */
 
 BRESULT np2_initialize(const char *argv0)
@@ -574,6 +660,7 @@ BRESULT np2_initialize(const char *argv0)
 
 	/* load configuration */
 	initload();
+	np2_applystartmedia();
 
 	/* If biospath not configured, default it to the config directory
 	 * (where the user places ROM files alongside wxnp21kai.toml) */

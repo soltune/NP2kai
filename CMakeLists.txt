@@ -9,6 +9,9 @@ project(
 )
 
 cmake_policy(SET CMP0076 NEW)
+if(APPLE)
+	enable_language(OBJCXX)
+endif()
 list(APPEND CMAKE_MODULE_PATH "${NP2kai_SOURCE_DIR}/cmake")
 
 # PkgConfig
@@ -336,6 +339,10 @@ list(APPEND NP2kai_WX_sources
 	"${CMAKE_CURRENT_SOURCE_DIR}/wx/trace.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/np2_thread.c"
 )
+if(APPLE)
+	# native screen output (CALayer + IOSurface)
+	list(APPEND NP2kai_WX_sources "${CMAKE_CURRENT_SOURCE_DIR}/wx/macos/macview.mm")
+endif()
 
 # NP2kai definitions
 list(APPEND NP2kai_common_definitions "BIOS_IO_EMULATION" "OSLANG_UTF8" "SUPPORT_8BPP" "SUPPORT_16BPP" "SUPPORT_24BPP" "SUPPORT_32BPP" "SUPPORT_CL_GD5430" "SUPPORT_CRT15KHZ" "SUPPORT_FAST_MEMORYCHECK" "SUPPORT_FMGEN" "SUPPORT_GPIB" "SUPPORT_HRTIMER" "SUPPORT_KAI_IMAGES" "SUPPORT_LARGE_HDD" "SUPPORT_NORMALDISP" "SUPPORT_PC9861K" "SUPPORT_PX" "SUPPORT_RESUME" "SUPPORT_RS232C_FIFO" "SUPPORT_S98" "SUPPORT_EMU_SOUNDBIOS" "SUPPORT_SCSI" "SUPPORT_HOSTDRV" "SUPPORT_FDDSNDDEV" "SUPPORT_SMPU98" "SUPPORT_SOFTKBD=0" "SUPPORT_SOUND_SB16" "SUPPORT_STATSAVE=10" "SUPPORT_UTF8" "SUPPORT_V30EXT" "SUPPORT_V30ORIGINAL" "SUPPORT_VIDEOFILTER" "SUPPORT_VPCVHD" "SUPPORT_WAB" "USE_MAME" "USE_MAME_BSD" "VAEG_FIX" "VERMOUTH_LIB" "SUPPORT_PNG")
@@ -589,18 +596,24 @@ if(NOT CMAKE_CROSSCOMPILING)
 		endif()
 
 		# toml++ (tomlplusplus)
-		find_package(tomlplusplus QUIET)
-		if(tomlplusplus_FOUND)
-			message("-- Found: toml++")
-			list(APPEND lib_tomlplusplus_libraries tomlplusplus::tomlplusplus)
+		# Prefer the bundled header-only copy: mixing it with a system shared
+		# build (TOML_HEADER_ONLY=0, e.g. Homebrew) breaks exception matching.
+		if(EXISTS "${NP2kai_SOURCE_DIR}/wx/toml++/toml.hpp")
+			message("-- Found: toml++ (bundled, header-only)")
 		else()
-			# fall back to pkg-config
-			pkg_check_modules(TOMLPLUSPLUS QUIET tomlplusplus)
-			if(TOMLPLUSPLUS_FOUND)
-				message("-- Found: toml++ (pkg-config)")
-				list(APPEND lib_tomlplusplus_include_dirs ${TOMLPLUSPLUS_INCLUDE_DIRS})
+			find_package(tomlplusplus QUIET)
+			if(tomlplusplus_FOUND)
+				message("-- Found: toml++")
+				list(APPEND lib_tomlplusplus_libraries tomlplusplus::tomlplusplus)
 			else()
-				message("-- toml++ not found via cmake/pkg-config, assuming header-only in system include path")
+				# fall back to pkg-config
+				pkg_check_modules(TOMLPLUSPLUS QUIET tomlplusplus)
+				if(TOMLPLUSPLUS_FOUND)
+					message("-- Found: toml++ (pkg-config)")
+					list(APPEND lib_tomlplusplus_include_dirs ${TOMLPLUSPLUS_INCLUDE_DIRS})
+				else()
+					message("-- toml++ not found via cmake/pkg-config, assuming header-only in system include path")
+				endif()
 			endif()
 		endif()
 	endif()
@@ -913,6 +926,7 @@ else()
 	if(BUILD_WX)
 		add_library(NP2kai_WX_base INTERFACE)
 		target_sources(NP2kai_WX_base INTERFACE ${NP2kai_WX_sources} ${NP2kai_TickCount_sources} ${NP2kai_Network_sources})
+		target_compile_features(NP2kai_WX_base INTERFACE cxx_std_17)
 		target_compile_definitions(NP2kai_WX_base INTERFACE ${NP2kai_WX_definitions} ${NP2kai_extra_definitions} ${NP2kai_TickCount_definitions} ${NP2kai_Network_definitions} ${libcdio_definitions})
 		# wxWidgets include dirs must come BEFORE NP2kai root to avoid "wx/compiler.h"
 		# collision: wx/cpp.h includes "wx/compiler.h" which would otherwise resolve to
@@ -920,6 +934,10 @@ else()
 		target_include_directories(NP2kai_WX_base BEFORE INTERFACE ${wxWidgets_INCLUDE_DIRS})
 		target_include_directories(NP2kai_WX_base INTERFACE ${NP2kai_WX_include_dirs} ${lib_tomlplusplus_include_dirs} ${LIBCDIO_INCLUDE_DIRS})
 		target_link_libraries(NP2kai_WX_base INTERFACE ${lib_math_libraries} ${wxWidgets_LIBRARIES} ${lib_tomlplusplus_libraries} SDL3::SDL3 SDL3_ttf::SDL3_ttf ${LIBCDIO_LINK_LIBRARIES} ${lib_dl_libraries})
+		if(APPLE)
+			# CoreAudio sound driver and CALayer/IOSurface screen output
+			target_link_libraries(NP2kai_WX_base INTERFACE "-framework AudioToolbox" "-framework CoreAudio" "-framework QuartzCore" "-framework IOSurface" "-framework AppKit")
+		endif()
 	endif()
 
 	if(MSVC_VERSION)
@@ -1386,6 +1404,27 @@ else()
 			)
 		endif()
 
+		if(APPLE)
+			# .app bundles: menu bar / Dock, Finder "Open With" for disk images
+			set(NP2kai_wx_icns "${NP2kai_SOURCE_DIR}/wx/macos/np2kai.icns")
+			set_source_files_properties(${NP2kai_wx_icns} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+			set(NP2kai_wx_bundles wxnp2kai wxnp21kai)
+			if(TARGET wxnp21kai_HAXM)
+				list(APPEND NP2kai_wx_bundles wxnp21kai_HAXM)
+			endif()
+			foreach(NP2kai_wx_bundle ${NP2kai_wx_bundles})
+				target_sources(${NP2kai_wx_bundle} PRIVATE ${NP2kai_wx_icns})
+				set_target_properties(${NP2kai_wx_bundle} PROPERTIES
+					MACOSX_BUNDLE TRUE
+					MACOSX_BUNDLE_INFO_PLIST "${NP2kai_SOURCE_DIR}/wx/macos/Info.plist.in"
+					MACOSX_BUNDLE_BUNDLE_NAME "${NP2kai_wx_bundle}"
+					MACOSX_BUNDLE_GUI_IDENTIFIER "jp.np2kai.${NP2kai_wx_bundle}"
+					MACOSX_BUNDLE_ICON_FILE "np2kai.icns"
+					MACOSX_BUNDLE_SHORT_VERSION_STRING "${CMAKE_PROJECT_VERSION}"
+					MACOSX_BUNDLE_BUNDLE_VERSION "${NP2kai_GIT_HASH}")
+			endforeach()
+		endif()
+
 		if(NOT BUILD_I286)
 			set_target_properties(wxnp2kai PROPERTIES EXCLUDE_FROM_ALL true)
 		else()
@@ -1526,16 +1565,16 @@ else()
 	if(BUILD_WX)
 		get_target_property(NP2kai_temp wxnp2kai EXCLUDE_FROM_ALL)
 		if(NOT NP2kai_temp)
-			install(TARGETS wxnp2kai CONFIGURATIONS RelWithDebInfo COMPONENT RelWithDebInfo)
-			install(TARGETS wxnp2kai CONFIGURATIONS Release COMPONENT Release)
+			install(TARGETS wxnp2kai BUNDLE DESTINATION . CONFIGURATIONS RelWithDebInfo COMPONENT RelWithDebInfo)
+			install(TARGETS wxnp2kai BUNDLE DESTINATION . CONFIGURATIONS Release COMPONENT Release)
 			install(FILES ${NP2kai_BINARY_DIR}/wxnp2kai.1 ${NP2kai_BINARY_DIR}/wxnp2kai.1j TYPE MAN CONFIGURATIONS RelWithDebInfo COMPONENT RelWithDebInfo)
 			install(FILES ${NP2kai_BINARY_DIR}/wxnp2kai.1 ${NP2kai_BINARY_DIR}/wxnp2kai.1j TYPE MAN CONFIGURATIONS Release COMPONENT Release)
 			set(GUI_MISC_INSTALL ON)
 		endif()
 		get_target_property(NP2kai_temp wxnp21kai EXCLUDE_FROM_ALL)
 		if(NOT NP2kai_temp)
-			install(TARGETS wxnp21kai CONFIGURATIONS RelWithDebInfo COMPONENT RelWithDebInfo)
-			install(TARGETS wxnp21kai CONFIGURATIONS Release COMPONENT Release)
+			install(TARGETS wxnp21kai BUNDLE DESTINATION . CONFIGURATIONS RelWithDebInfo COMPONENT RelWithDebInfo)
+			install(TARGETS wxnp21kai BUNDLE DESTINATION . CONFIGURATIONS Release COMPONENT Release)
 			install(FILES ${NP2kai_BINARY_DIR}/wxnp21kai.1 ${NP2kai_BINARY_DIR}/wxnp21kai.1j TYPE MAN CONFIGURATIONS RelWithDebInfo COMPONENT RelWithDebInfo)
 			install(FILES ${NP2kai_BINARY_DIR}/wxnp21kai.1 ${NP2kai_BINARY_DIR}/wxnp21kai.1j TYPE MAN CONFIGURATIONS Release COMPONENT Release)
 			set(GUI_MISC_INSTALL ON)
@@ -1543,8 +1582,8 @@ else()
 		if(BUILD_HAXM)
 			get_target_property(NP2kai_temp wxnp21kai_HAXM EXCLUDE_FROM_ALL)
 			if(NOT NP2kai_temp)
-				install(TARGETS wxnp21kai_HAXM CONFIGURATIONS RelWithDebInfo COMPONENT RelWithDebInfo)
-				install(TARGETS wxnp21kai_HAXM CONFIGURATIONS Release COMPONENT Release)
+				install(TARGETS wxnp21kai_HAXM BUNDLE DESTINATION . CONFIGURATIONS RelWithDebInfo COMPONENT RelWithDebInfo)
+				install(TARGETS wxnp21kai_HAXM BUNDLE DESTINATION . CONFIGURATIONS Release COMPONENT Release)
 				install(FILES ${NP2kai_BINARY_DIR}/wxnp21kai_HAXM.1 ${NP2kai_BINARY_DIR}/wxnp21kai_HAXM.1j TYPE MAN CONFIGURATIONS RelWithDebInfo COMPONENT RelWithDebInfo)
 				install(FILES ${NP2kai_BINARY_DIR}/wxnp21kai_HAXM.1 ${NP2kai_BINARY_DIR}/wxnp21kai_HAXM.1j TYPE MAN CONFIGURATIONS Release COMPONENT Release)
 				set(GUI_MISC_INSTALL ON)

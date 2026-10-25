@@ -20,6 +20,12 @@
 #include <codecnv/codecnv.h>
 #include <diskimage/fddfile.h>
 #include <fdd/diskdrv.h>
+#include <wx/dnd.h>
+#if defined(__WXOSX__)
+#include "macos/macview.h"
+#endif
+#include <atomic>
+#include <wx/filename.h>
 #include <fdd/sxsi.h>
 #include <vram/scrndraw.h>
 #include <vram/scrnsave.h>
@@ -215,9 +221,13 @@ private:
 	wxSlider *m_slider;
 };
 
+/* set while a redraw event is queued: if the UI thread falls behind,
+ * frames are skipped instead of piling up stale events */
+static std::atomic<bool> s_redrawPending(false);
+
 void np2frame_requestRedraw(void)
 {
-	if (s_frame) {
+	if (s_frame && !s_redrawPending.exchange(true)) {
 		/* thread-safe: post custom event */
 		wxCommandEvent *ev = new wxCommandEvent(wxEVT_MENU, wxID_REFRESH);
 		wxQueueEvent(s_frame, ev);
@@ -245,6 +255,24 @@ void np2frame_setTitle(const char *title)
 		});
 	}
 }
+
+/* ---- drag & drop of disk images ---- */
+
+class Np2DropTarget : public wxFileDropTarget
+{
+public:
+	explicit Np2DropTarget(Np2Frame *frame) : m_frame(frame) {}
+	bool OnDropFiles(wxCoord, wxCoord, const wxArrayString &files) override
+	{
+		/* defer: a modal box inside the drop callback blocks the drag source */
+		m_frame->CallAfter([f = m_frame, files]() {
+			for (const wxString &path : files) f->OpenMediaFile(path);
+		});
+		return true;
+	}
+private:
+	Np2Frame *m_frame;
+};
 
 /* ---- event table ---- */
 wxBEGIN_EVENT_TABLE(Np2Frame, wxFrame)
@@ -334,6 +362,7 @@ Np2Frame::Np2Frame(const wxString &title, const wxPoint &pos, const wxSize &size
 
 	/* Create screen panel */
 	m_panel = new Np2Panel(this);
+	m_panel->SetDropTarget(new Np2DropTarget(this));
 
 	if (m_cycleScreenshotEnabled && cycle_shot_interval >= 1000) {
 		m_cycleScreenshotTimer.Start(cycle_shot_interval);
@@ -364,11 +393,20 @@ Np2Frame::Np2Frame(const wxString &title, const wxPoint &pos, const wxSize &size
 		m_emuTimer.Start(1);
 	}
 
+#if defined(__WXOSX__)
+	macview_watchfullscreen(m_panel->GetHandle(), [](void *ctx, BOOL full) {
+		static_cast<Np2Frame *>(ctx)->OnFullScreenChanged(full != FALSE);
+	}, this);
+#endif
+
 	m_panel->SetFocus();
 }
 
 Np2Frame::~Np2Frame()
 {
+#if defined(__WXOSX__)
+	macview_unwatchfullscreen();
+#endif
 	m_emuTimer.Stop();
 	np2_multithread_shutdown();
 	s_frame = nullptr;
@@ -388,6 +426,18 @@ void Np2Frame::StopEmulation(void)
 }
 
 /* ---- menu construction ---- */
+
+/* On macOS, plain function keys must reach the PC-98, and Quit /
+ * Preferences follow the system shortcuts (Ctrl means Command there). */
+#if defined(__WXOSX__)
+#define MENU_FKEY_MOD   "Ctrl+"
+#define MENU_PREF_ACCEL "Ctrl+,"
+#define MENU_EXIT_ACCEL "Ctrl+Q"
+#else
+#define MENU_FKEY_MOD   ""
+#define MENU_PREF_ACCEL "Ctrl+P"
+#define MENU_EXIT_ACCEL "Alt+F4"
+#endif
 
 /* Helper: append a menu item with an ArtProvider bitmap */
 static wxMenuItem *AppendArt(wxMenu *menu, int id,
@@ -424,7 +474,7 @@ void Np2Frame::BuildMenuBar(void)
 	/* --- Emulate --- */
 	wxMenu *menuEmu = new wxMenu;
 
-	AppendArt(menuEmu, ID_EMU_STARTPAUSE, "&Start/Pause\tF5",
+	AppendArt(menuEmu, ID_EMU_STARTPAUSE, "&Start/Pause\t" MENU_FKEY_MOD "F5",
 	          "Start or pause emulation", wxART_GO_FORWARD);
 	AppendArt(menuEmu, ID_EMU_RESET, "&Reset",
 	          "Hardware reset",           wxART_UNDO);
@@ -452,9 +502,9 @@ void Np2Frame::BuildMenuBar(void)
 	slotMenu->Check(ID_EMU_STATESLOT_0, true);
 	AppendSubArt(menuEmu, slotMenu, "State &Slot", wxART_COPY);
 
-	AppendArt(menuEmu, ID_EMU_LOADSTATE, "&Load State\tF7",
+	AppendArt(menuEmu, ID_EMU_LOADSTATE, "&Load State\t" MENU_FKEY_MOD "F7",
 	          "Load emulator state", wxART_FILE_OPEN);
-	AppendArt(menuEmu, ID_EMU_SAVESTATE, "&Save State\tF8",
+	AppendArt(menuEmu, ID_EMU_SAVESTATE, "&Save State\t" MENU_FKEY_MOD "F8",
 	          "Save emulator state", wxART_FILE_SAVE);
 	menuEmu->AppendSeparator();
 	AppendArt(menuEmu, ID_EMU_NEW_FD_IMAGE, "New &FD Image...",
@@ -462,10 +512,10 @@ void Np2Frame::BuildMenuBar(void)
 	AppendArt(menuEmu, ID_EMU_NEW_HD_IMAGE, "New &HD Image...",
 	          "Create new hard disk image", wxART_NEW);
 	menuEmu->AppendSeparator();
-	AppendArt(menuEmu, ID_EMU_PREFERENCE, "&Preference...\tCtrl+P",
+	AppendArt(menuEmu, ID_EMU_PREFERENCE, "&Preference...\t" MENU_PREF_ACCEL,
 	          "Emulator settings", wxART_HELP_SETTINGS);
 	menuEmu->AppendSeparator();
-	AppendArt(menuEmu, ID_EMU_EXIT, "E&xit\tAlt+F4",
+	AppendArt(menuEmu, ID_EMU_EXIT, "E&xit\t" MENU_EXIT_ACCEL,
 	          "Exit the emulator", wxART_QUIT);
 
 	bar->Append(menuEmu, "&Emulate");
@@ -793,7 +843,7 @@ void Np2Frame::UpdateMenuStatus(void)
 	}
 
 	/* Display */
-	bar->Check(ID_DISP_FULLSCREEN,  IsFullScreen());
+	bar->Check(ID_DISP_FULLSCREEN,  IsFullScreenNow());
 	/* Map SCRNMODE rotate bits → menu item index (0-3) */
 	{
 		int rotidx = 0;
@@ -812,6 +862,7 @@ void Np2Frame::UpdateMenuStatus(void)
 void Np2Frame::OnRefreshEvent(wxCommandEvent &evt)
 {
 	if (evt.GetId() == wxID_REFRESH) {
+		s_redrawPending = false;
 		if (m_panel) m_panel->UpdateScreen();
 	} else {
 		UpdateCaption(SYS_UPDATECAPTION_ALL);
@@ -847,8 +898,10 @@ void Np2Frame::OnEmuStartPause(wxCommandEvent & /*evt*/)
 
 void Np2Frame::OnEmuReset(wxCommandEvent & /*evt*/)
 {
+	StopEmulation();
 	pccore_reset();
 	soundmng_reset();
+	StartEmulation();
 }
 
 void Np2Frame::OnEmuStateSlot(wxCommandEvent &evt)
@@ -949,7 +1002,11 @@ void Np2Frame::OnFdOpen(wxCommandEvent &evt)
 	    wxFD_OPEN | wxFD_FILE_MUST_EXIST);
 	if (dlg.ShowModal() != wxID_OK) return;
 
-	wxString path = dlg.GetPath();
+	InsertFd(drv, dlg.GetPath());
+}
+
+void Np2Frame::InsertFd(int drv, const wxString &path)
+{
 	StopEmulation();
 
 	np2cfg.fddequip |= (UINT8)(1 << drv);
@@ -957,7 +1014,7 @@ void Np2Frame::OnFdOpen(wxCommandEvent &evt)
 	/* diskdrv_readyfdd: immediate mount (same as startup), not delayed */
 	diskdrv_readyfdd((REG8)drv, path.ToUTF8().data(), 0);
 	milstr_ncpy(np2cfg.fddfile[drv], path.ToUTF8().data(), MAX_PATH);
-	milstr_ncpy(fddfolder, dlg.GetDirectory().ToUTF8().data(), MAX_PATH);
+	milstr_ncpy(fddfolder, wxFileName(path).GetPath().ToUTF8().data(), MAX_PATH);
 	sysmng_update(SYS_UPDATEFDD | SYS_UPDATECFG);
 	UpdateMenuStatus();
 
@@ -998,10 +1055,14 @@ void Np2Frame::OnHdOpen(wxCommandEvent &evt)
 	    wxFD_OPEN | wxFD_FILE_MUST_EXIST);
 	if (dlg.ShowModal() != wxID_OK) return;
 
-	wxString path = dlg.GetPath();
+	SetHd(drv, dlg.GetPath());
+}
+
+void Np2Frame::SetHd(int drv, const wxString &path)
+{
 	StopEmulation();
 
-	milstr_ncpy(hddfolder, dlg.GetDirectory().ToUTF8().data(), MAX_PATH);
+	milstr_ncpy(hddfolder, wxFileName(path).GetPath().ToUTF8().data(), MAX_PATH);
 	milstr_ncpy(np2cfg.sasihdd[drv], path.ToUTF8().data(), MAX_PATH);
 #if defined(SUPPORT_IDEIO)
 	np2cfg.idetype[drv] = SXSIDEV_HDD;
@@ -1048,10 +1109,20 @@ void Np2Frame::OnCdOpen(wxCommandEvent & /*evt*/)
 	    wxFD_OPEN | wxFD_FILE_MUST_EXIST);
 	if (dlg.ShowModal() != wxID_OK) return;
 
-	wxString path = dlg.GetPath();
+	MountCd(dlg.GetPath());
+}
+
+void Np2Frame::MountCd(const wxString &path)
+{
+	int cd_drv = findCdromDrive();
+	if (cd_drv < 0) {
+		wxMessageBox("No CD-ROM drive configured.", "Info", wxOK | wxICON_INFORMATION);
+		return;
+	}
+
 	StopEmulation();
 
-	milstr_ncpy(cdfolder, dlg.GetDirectory().ToUTF8().data(), MAX_PATH);
+	milstr_ncpy(cdfolder, wxFileName(path).GetPath().ToUTF8().data(), MAX_PATH);
 	sxsi_devopen((REG8)cd_drv, path.ToUTF8().data());
 #if defined(SUPPORT_IDEIO)
 	milstr_ncpy(np2cfg.idecd[cd_drv & 0x03], path.ToUTF8().data(), MAX_PATH);
@@ -1060,6 +1131,61 @@ void Np2Frame::OnCdOpen(wxCommandEvent & /*evt*/)
 	UpdateMenuStatus();
 
 	StartEmulation();
+}
+
+/* ---- boot media (Finder launch) ---- */
+
+void Np2Frame::BootMedia(const wxArrayString &paths)
+{
+	StopEmulation();
+	for (const wxString &path : paths) {
+		np2_addmedia(path.ToUTF8().data());
+	}
+	np2_applystartmedia();
+	pccore_reset();
+	for (int i = 0; i < 4; i++) {
+		if (np2cfg.fddfile[i][0]) {
+			diskdrv_readyfdd((REG8)i, np2cfg.fddfile[i], 0);
+		}
+	}
+	soundmng_reset();
+	sysmng_update(SYS_UPDATEFDD | SYS_UPDATEHDD | SYS_UPDATECFG);
+	UpdateMenuStatus();
+	StartEmulation();
+}
+
+/* ---- media by file type ---- */
+
+void Np2Frame::OpenMediaFile(const wxString &path)
+{
+	wxString ext = wxFileName(path).GetExt().Lower();
+	if (np2_isfdimage(path.ToUTF8().data())) {
+		/* first empty drive of FD1/FD2, otherwise swap FD1 */
+		int drv = 0;
+		for (int i = 0; i < 2; i++) {
+			if (np2cfg.fddfile[i][0] == '\0') { drv = i; break; }
+		}
+		InsertFd(drv, path);
+	} else if (ext == "iso" || ext == "cue" || ext == "ccd" || ext == "mds" || ext == "nrg") {
+		MountCd(path);
+	} else if (ext == "hdi" || ext == "thd" || ext == "nhd" || ext == "vhd" || ext == "sln") {
+		int drv = 0;
+#if defined(SUPPORT_IDEIO)
+		for (int i = 0; i < 4; i++) {
+			if (np2cfg.idetype[i] != SXSIDEV_CDROM && np2cfg.sasihdd[i][0] == '\0') { drv = i; break; }
+		}
+#endif
+		SetHd(drv, path);
+		if (wxMessageBox(wxString::Format("HD%d: %s\n\nReset now to use the new hard disk?",
+		                                  drv + 1, wxFileName(path).GetFullName()),
+		                 "Hard Disk", wxYES_NO | wxICON_QUESTION, this) == wxYES) {
+			wxCommandEvent ev(wxEVT_MENU, ID_EMU_RESET);
+			OnEmuReset(ev);
+		}
+	} else {
+		wxMessageBox(wxString::Format("Unknown disk image type: %s", wxFileName(path).GetFullName()),
+		             "Open", wxOK | wxICON_WARNING, this);
+	}
 }
 
 void Np2Frame::OnCdEject(wxCommandEvent & /*evt*/)
@@ -1079,18 +1205,45 @@ void Np2Frame::OnCdEject(wxCommandEvent & /*evt*/)
 
 void Np2Frame::OnDispFullScreen(wxCommandEvent &evt)
 {
-	ShowFullScreen(evt.IsChecked());
-	/* Sync the menu checkmark to actual state (in case ShowFullScreen was denied) */
-	wxMenuBar *bar = GetMenuBar();
-	if (bar) bar->Check(ID_DISP_FULLSCREEN, IsFullScreen());
+	SetFullScreen(evt.IsChecked());
 }
 
 void Np2Frame::ToggleFullScreen(void)
 {
-	bool goFull = !IsFullScreen();
-	ShowFullScreen(goFull);
+	SetFullScreen(!IsFullScreenNow());
+}
+
+/* macOS: native fullscreen (own Space, like the green button);
+ * the status bar is hidden and the screen letterboxed to 16:10. */
+void Np2Frame::SetFullScreen(bool full)
+{
+#if defined(__WXOSX__)
+	macview_setfullscreen(m_panel->GetHandle(), full ? TRUE : FALSE);
+#else
+	ShowFullScreen(full);
+	OnFullScreenChanged(IsFullScreen());
+#endif
+}
+
+bool Np2Frame::IsFullScreenNow(void)
+{
+#if defined(__WXOSX__)
+	return macview_isfullscreen(m_panel->GetHandle()) != FALSE;
+#else
+	return IsFullScreen();
+#endif
+}
+
+void Np2Frame::OnFullScreenChanged(bool full)
+{
+#if defined(__WXOSX__)
+	if (GetStatusBar()) {
+		GetStatusBar()->Show(!full);
+		Layout();
+	}
+#endif
 	wxMenuBar *bar = GetMenuBar();
-	if (bar) bar->Check(ID_DISP_FULLSCREEN, IsFullScreen());
+	if (bar) bar->Check(ID_DISP_FULLSCREEN, full);
 }
 
 void Np2Frame::OnDispRotate(wxCommandEvent &evt)
@@ -1113,7 +1266,7 @@ void Np2Frame::OnDispRotate(wxCommandEvent &evt)
 		sysmng_update(SYS_UPDATECFG);
 
 		/* Resize window to match orientation (90°/270° → portrait) */
-		if (!IsFullScreen()) {
+		if (!IsFullScreenNow()) {
 			int w, h;
 			scrnmng_getsize(&w, &h);
 			bool portrait = (newmode & SCRNMODE_ROTATE) != 0;
@@ -1212,7 +1365,7 @@ void Np2Frame::OnScreenX3(wxCommandEvent & /*evt*/)
 
 void Np2Frame::OnScreenFull(wxCommandEvent & /*evt*/)
 {
-	ShowFullScreen(!IsFullScreen());
+	SetFullScreen(!IsFullScreenNow());
 }
 
 /* ---- Window events ---- */
@@ -1228,7 +1381,7 @@ void Np2Frame::OnClose(wxCloseEvent &evt)
 void Np2Frame::OnSize(wxSizeEvent &evt)
 {
 	/* save window geometry */
-	if (!IsMaximized() && !IsFullScreen()) {
+	if (!IsMaximized() && !IsFullScreenNow()) {
 		wxPoint pos = GetPosition();
 		wxSize  sz  = GetClientSize();
 		np2oscfg.winx      = pos.x;

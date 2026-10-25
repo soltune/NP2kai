@@ -6,6 +6,10 @@
 #include <wx/wx.h>
 #include <wx/timer.h>
 
+#if defined(__WXOSX__)
+#include "macos/macview.h"
+#endif
+
 /* The Np2Panel handles:
  *  - Drawing the PC-98 framebuffer via wxBitmap
  *  - Keyboard/mouse input forwarding to the emulator
@@ -26,7 +30,11 @@ public:
 private:
 	wxImage   m_image;
 	wxBitmap  m_bitmap;
+#if defined(__WXOSX__)
+	MACVIEW  *m_macview;
+#endif
 	bool      m_mouseCaptured;
+	bool      m_warping;
 	wxPoint   m_lastMousePos;
 
 	void OnPaint(wxPaintEvent &evt);
@@ -40,6 +48,7 @@ private:
 	void OnMouseCaptureLost(wxMouseCaptureLostEvent &evt);
 	void OnSetFocus(wxFocusEvent &evt);
 	void OnKillFocus(wxFocusEvent &evt);
+	void BuildImage(void);
 
 	wxDECLARE_EVENT_TABLE();
 };

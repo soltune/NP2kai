@@ -6,14 +6,28 @@
 #include "np2.h"
 #include "ini.h"
 
+#include <wx/filename.h>
+
+#if defined(__WXOSX__)
+#include "macos/macview.h"
+#endif
+
 wxIMPLEMENT_APP(Np2App);
 
 bool Np2App::OnInit()
 {
 	m_initialized = false;
+	m_launching = true;
 
 	/* wxWidgets image handlers (for PNG icons etc.) */
 	wxInitAllImageHandlers();
+
+#if defined(__WXOSX__)
+	/* move these items into the application menu */
+	s_macAboutMenuItemId       = ID_OTHER_ABOUT;
+	s_macPreferencesMenuItemId = ID_EMU_PREFERENCE;
+	s_macExitMenuItemId        = ID_EMU_EXIT;
+#endif
 
 	/* SDL: init audio only (no video - that's wxWidgets' job) */
 	if (!SDL_Init(SDL_INIT_AUDIO | SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD)) {
@@ -56,6 +70,12 @@ bool Np2App::OnInit()
 	frame->SetClientSize(w, h);
 	frame->Show(true);
 	SetTopWindow(frame);
+#if defined(__WXOSX__)
+	/* a bare executable started from a shell stays in the background */
+	macview_activateapp();
+#endif
+	/* files Finder hands over at launch arrive before this runs */
+	CallAfter([this]() { m_launching = false; });
 
 	return true;
 }
@@ -78,13 +98,49 @@ bool Np2App::ParseArgs(void)
 		} else if (arg == "-h" || arg == "--help") {
 			wxMessageBox(
 			    wxString::Format(
-			        "Usage: %s [options]\n"
+			        "Usage: %s [options] [disk images...]\n"
 			        "  -c <file>   Config file path\n"
 			        "  -h          Help\n",
 			        argv[0]),
 			    "NP2kai wx", wxOK | wxICON_INFORMATION);
 			return false;
+		} else if (arg.StartsWith("-")) {
+			/* ignore unknown options (e.g. macOS -psn_...) */
+		} else {
+			wxFileName fn(arg);
+			fn.MakeAbsolute();
+			if (fn.FileExists()) {
+				m_startFiles.Add(fn.GetFullPath());
+				np2_addmedia(fn.GetFullPath().ToUTF8().data());
+			}
 		}
 	}
 	return true;
 }
+
+#if defined(__WXOSX__)
+/* Finder "Open With", drop on the Dock icon, `open -a`.
+ * Cocoa also replays command-line file arguments here at launch;
+ * those were already applied by np2_initialize(), so skip them once. */
+void Np2App::MacOpenFiles(const wxArrayString &fileNames)
+{
+	Np2Frame *frame = wxDynamicCast(GetTopWindow(), Np2Frame);
+	wxArrayString files;
+	for (const wxString &name : fileNames) {
+		int idx = m_startFiles.Index(name);
+		if (idx != wxNOT_FOUND) {
+			m_startFiles.RemoveAt(idx);
+			continue;
+		}
+		files.Add(name);
+	}
+	if (!frame || files.IsEmpty()) return;
+
+	if (m_launching) {
+		/* app opened by double-clicking an image: boot from it */
+		frame->BootMedia(files);
+	} else {
+		for (const wxString &name : files) frame->OpenMediaFile(name);
+	}
+}
+#endif

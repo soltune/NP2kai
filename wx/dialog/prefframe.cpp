@@ -676,11 +676,13 @@ wxPanel *PrefFrame::BuildSoundPage(wxNotebook *nb)
 	           wxGBPosition(row, 2), wxDefaultSpan, wxALIGN_CENTER_VERTICAL);
 	wxChoice *delay = new wxChoice(page, wxID_ANY);
 	delay->SetName("Latencys");
+	delay->Append("Minimum (12ms)");
+	delay->Append("Low (24ms)");
 	delay->Append("Short (47ms)");
 	delay->Append("Normal (93ms)");
 	delay->Append("Long (186ms)");
 	delay->Append("Max (372ms)");
-	delay->SetSelection(1);
+	delay->SetSelection(3);
 	gsTop->Add(delay, wxGBPosition(row, 3), wxDefaultSpan);
 	row++;
 
@@ -2286,9 +2288,9 @@ void PrefFrame::LoadFromConfig(int tabId)
 		}
 		if (auto *w = FindByName(this, "Latencys")) {
 			if (auto *ch = wxDynamicCast(w, wxChoice)) {
-				const UINT16 delays[] = {47, 93, 186, 372};
-				int sel = 1;
-				for (int i = 0; i < 4; i++) { if (np2cfg.delayms <= delays[i]) { sel = i; break; } }
+				const UINT16 delays[] = {12, 24, 47, 93, 186, 372};
+				int sel = 3;
+				for (int i = 0; i < 6; i++) { if (np2cfg.delayms <= delays[i]) { sel = i; break; } }
 				ch->SetSelection(sel);
 			}
 		}
@@ -2985,6 +2987,8 @@ void PrefFrame::SaveToConfig(void)
 		if (sel >= 0 && sel < (int)NELEMENTS(s_sndboard_vals))
 			np2cfg.SOUND_SW = s_sndboard_vals[sel];
 	}
+	const UINT32 oldrate  = np2cfg.samplingrate;
+	const UINT16 olddelay = np2cfg.delayms;
 	if (auto *w = FindByName(this, "SampleHz")) {
 		if (auto *ch = wxDynamicCast(w, wxChoice)) {
 			int sel = ch->GetSelection();
@@ -2994,10 +2998,15 @@ void PrefFrame::SaveToConfig(void)
 	}
 	if (auto *w = FindByName(this, "Latencys")) {
 		if (auto *ch = wxDynamicCast(w, wxChoice)) {
-			const UINT16 delays[] = {47, 93, 186, 372};
+			const UINT16 delays[] = {12, 24, 47, 93, 186, 372};
 			int sel = ch->GetSelection();
-			if (sel >= 0 && sel < 4) np2cfg.delayms = delays[sel];
+			if (sel >= 0 && sel < 6) np2cfg.delayms = delays[sel];
 		}
+	}
+	/* the sound stream is created once at startup (pccore_init) */
+	if (np2cfg.samplingrate != oldrate || np2cfg.delayms != olddelay) {
+		wxMessageBox("Sample rate and buffer delay changes take effect after restarting NP2kai.",
+		             "Sound", wxOK | wxICON_INFORMATION, this);
 	}
 
 	/* Mixer sub-tab */

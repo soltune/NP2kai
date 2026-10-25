@@ -15,8 +15,15 @@ enum {
 enum {
 	SNDDRV_NODRV,
 	SNDDRV_SDL,
+	SNDDRV_COREAUDIO,
 	SNDDRV_DRVMAX
 };
+
+#if defined(__APPLE__)
+#define SNDDRV_DEFAULT  SNDDRV_COREAUDIO
+#else
+#define SNDDRV_DEFAULT  SNDDRV_SDL
+#endif
 
 UINT8       snddrv_drv2num(const char *cfgstr);
 const char *snddrv_num2drv(UINT8 num);

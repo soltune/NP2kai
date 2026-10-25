@@ -184,6 +184,24 @@ sudo apt install git cmake ninja-build build-essential libsdl2-dev libsdl2-mixer
 ```
 sudo brew install cmake ninja sdl sdl_mixer sdl_ttf sdl2 sdl2_mixer sdl2_ttf libusb
 ```
+- macOS (wxWidgets port, native .app)
+1. Install Xcode command line tools and brew.
+2. Run the following commands:
+```
+brew install cmake ninja wxwidgets sdl3 sdl3_ttf libcdio libpng
+cmake . -B build-mac -G Ninja -D BUILD_WX=ON -D BUILD_SDL=OFF
+ninja -C build-mac wxnp21kai
+```
+3. Locate BIOS files to `~/.config/wxnp21kai`, then run `build-mac/wxnp21kai.app`.
+   Disk images can be opened from Finder, dropped on the window or Dock icon,
+   or given on the command line (`wxnp21kai.app/Contents/MacOS/wxnp21kai image.hdi`).
+   - Sound uses CoreAudio directly; pick "Buffer delay" Low (24ms) or Minimum (12ms)
+     in Preference for low latency.
+   - The screen is shown through Core Animation (GPU scaling).
+     `NP2KAI_SOFTDRAW=1` falls back to the portable wxBitmap drawing.
+   - Keys are mapped by physical position (JIS layout): F11-F15 = VF1-VF5,
+     英数 = XFER, かな = KANA. Use an English input source while playing.
+     Command+F5/F7/F8 = Start/Pause, Load/Save State.
 
 #### Build
 1. Change directory to NP2kai.

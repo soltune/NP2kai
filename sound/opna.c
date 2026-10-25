@@ -120,7 +120,7 @@ void opna_reset(POPNA opna, REG8 cCaps)
 	if(enable_fmgen) {
 		if(!opna->fmgen) OPNA_Destruct(opna->fmgen);
 		opna->fmgen = OPNA_Construct();
-		OPNA_Init(opna->fmgen, OPNA_CLOCK*2, np2cfg.samplingrate, false, "");
+		OPNA_Init(opna->fmgen, OPNA_CLOCK*2, (soundcfg.rate ? soundcfg.rate : np2cfg.samplingrate), false, "");
 		getbiospath(path, "", NELEMENTS(path));
 		OPNA_LoadRhythmSample(opna->fmgen, path);
 		OPNA_SetVolumeFM(opna->fmgen, pow((double)np2cfg.vol_fm / 128, 0.12) * (20 + 192) - 192);

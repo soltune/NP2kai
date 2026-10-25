@@ -110,8 +110,19 @@ public:
 	Np2Panel *GetPanel(void) { return m_panel; }
 	bool IsRunning(void)     const { return m_running; }
 	void ToggleFullScreen(void);
+	void SetFullScreen(bool full);
+	bool IsFullScreenNow(void);
+	void OnFullScreenChanged(bool full);
 	void StartEmulation(void);
 	void StopEmulation(void);
+
+	/* Mount a disk image by file type (drag & drop, Finder open). */
+	void OpenMediaFile(const wxString &path);
+	void InsertFd(int drv, const wxString &path);
+	void SetHd(int drv, const wxString &path);
+	void MountCd(const wxString &path);
+	/* Replace the boot media with these images and reset. */
+	void BootMedia(const wxArrayString &paths);
 
 private:
 	Np2Panel *m_panel;

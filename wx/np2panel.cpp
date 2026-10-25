@@ -34,13 +34,23 @@ Np2Panel::Np2Panel(wxWindow *parent)
 	: wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
 	          wxWANTS_CHARS | wxTAB_TRAVERSAL)
 	, m_mouseCaptured(false)
+	, m_warping(false)
 {
 	SetBackgroundStyle(wxBG_STYLE_PAINT);
 	SetBackgroundColour(*wxBLACK);
+#if defined(__WXOSX__)
+	/* NP2KAI_SOFTDRAW=1 forces the portable wxBitmap path (comparison/fallback) */
+	const char *soft = getenv("NP2KAI_SOFTDRAW");
+	m_macview = (soft && soft[0] == '1') ? NULL : macview_create(GetHandle());
+#endif
 }
 
 Np2Panel::~Np2Panel()
 {
+#if defined(__WXOSX__)
+	macview_destroy(m_macview);
+	m_macview = NULL;
+#endif
 	if (m_mouseCaptured) {
 		wxPanel::ReleaseMouse();
 		m_mouseCaptured = false;
@@ -49,13 +59,29 @@ Np2Panel::~Np2Panel()
 
 void Np2Panel::UpdateScreen(void)
 {
+#if defined(__WXOSX__)
+	if (m_macview) {
+		int w, h, bpp;
+		scrnmng_lockbuf();
+		const UINT8 *src = scrnmng_getpixbuf(&w, &h, &bpp);
+		macview_present(m_macview, src, w, h, bpp, scrnmode & SCRNMODE_ROTATEMASK);
+		scrnmng_unlockbuf();
+		return;
+	}
+#endif
+	BuildImage();
+	Refresh(false);
+}
+
+/* framebuffer -> m_bitmap (software path, and screen capture) */
+void Np2Panel::BuildImage(void)
+{
 	int w, h, bpp;
 	scrnmng_lockbuf();
 	const UINT8 *src = scrnmng_getpixbuf(&w, &h, &bpp);
 
 	if (!src || w <= 0 || h <= 0) {
 		scrnmng_unlockbuf();
-		Refresh(false);
 		return;
 	}
 
@@ -110,12 +136,13 @@ void Np2Panel::UpdateScreen(void)
 	} else {
 		m_bitmap = wxBitmap(m_image);
 	}
-
-	Refresh(false);
 }
 
 wxBitmap Np2Panel::GetBitmap(void)
 {
+#if defined(__WXOSX__)
+	if (m_macview) BuildImage();
+#endif
 	return m_bitmap;
 }
 
@@ -126,6 +153,11 @@ void Np2Panel::OnPaint(wxPaintEvent & /*evt*/)
 	wxAutoBufferedPaintDC dc(this);
 	dc.SetBackground(*wxBLACK_BRUSH);
 	dc.Clear();
+#if defined(__WXOSX__)
+	if (m_macview) {
+		return;  /* the CALayer above this view shows the screen */
+	}
+#endif
 	if (!m_bitmap.IsOk()) {
 		return;
 	}
@@ -146,6 +178,9 @@ void Np2Panel::OnPaint(wxPaintEvent & /*evt*/)
 
 void Np2Panel::OnSize(wxSizeEvent &evt)
 {
+#if defined(__WXOSX__)
+	macview_layout(m_macview);
+#endif
 	Refresh();
 	evt.Skip();
 }
@@ -155,6 +190,15 @@ void Np2Panel::OnSize(wxSizeEvent &evt)
 void Np2Panel::OnKeyDown(wxKeyEvent &evt)
 {
 	int key = evt.GetKeyCode();
+
+#if defined(__WXOSX__)
+	/* Command shortcuts belong to the menu bar; the physical Control
+	 * key (RawControlDown) still goes to the emulator as CTRL. */
+	if (evt.CmdDown()) {
+		evt.Skip();
+		return;
+	}
+#endif
 
 	/* Alt+Enter → toggle fullscreen */
 	if (evt.AltDown() && (key == WXK_RETURN || key == WXK_NUMPAD_ENTER)) {
@@ -180,6 +224,7 @@ void Np2Panel::OnKeyDown(wxKeyEvent &evt)
 
 void Np2Panel::OnKeyUp(wxKeyEvent &evt)
 {
+	/* always forwarded, so a key held when Command went down is released */
 	wxkbd_keyup(evt.GetKeyCode(), (int)evt.GetRawKeyCode());
 }
 
@@ -188,6 +233,17 @@ void Np2Panel::OnKeyUp(wxKeyEvent &evt)
 void Np2Panel::OnMouseMove(wxMouseEvent &evt)
 {
 	if (!m_mouseCaptured) { evt.Skip(); return; }
+
+#if defined(__WXOSX__)
+	/* the cursor is detached while captured: use the raw deltas */
+	int mdx, mdy;
+	macview_getmousedelta(&mdx, &mdy);
+	if (mdx || mdy) {
+		mousemng_onmove(mdx, mdy);
+	}
+#else
+	/* WarpPointer may deliver a motion event synchronously */
+	if (m_warping) return;
 
 	wxPoint pos = evt.GetPosition();
 	int cx = GetClientSize().x / 2;
@@ -198,9 +254,12 @@ void Np2Panel::OnMouseMove(wxMouseEvent &evt)
 	if (dx || dy) {
 		mousemng_onmove(dx, dy);
 		/* warp cursor back to center to allow unlimited movement */
+		m_warping = true;
 		WarpPointer(cx, cy);
+		m_warping = false;
 		m_lastMousePos = wxPoint(cx, cy);
 	}
+#endif
 }
 
 void Np2Panel::OnMouseLeft(wxMouseEvent &evt)
@@ -238,6 +297,10 @@ void Np2Panel::OnMouseRight(wxMouseEvent &evt)
 void Np2Panel::OnMouseCaptureLost(wxMouseCaptureLostEvent & /*evt*/)
 {
 	m_mouseCaptured = false;
+#if defined(__WXOSX__)
+	macview_setmouserelative(FALSE);
+#endif
+	SetCursor(wxNullCursor);
 	mousemng_showcursor();
 }
 
@@ -245,10 +308,16 @@ void Np2Panel::CaptureMouse(void)
 {
 	if (!m_mouseCaptured) {
 		m_mouseCaptured = true;
+#if defined(__WXOSX__)
+		macview_setmouserelative(TRUE);
+#else
 		int cx = GetClientSize().x / 2;
 		int cy = GetClientSize().y / 2;
 		m_lastMousePos = wxPoint(cx, cy);
+		m_warping = true;
 		WarpPointer(cx, cy);
+		m_warping = false;
+#endif
 		wxPanel::CaptureMouse();
 		SetCursor(wxCursor(wxCURSOR_BLANK));
 		mousemng_hidecursor();
@@ -259,6 +328,9 @@ void Np2Panel::ReleaseMouse(void)
 {
 	if (m_mouseCaptured) {
 		m_mouseCaptured = false;
+#if defined(__WXOSX__)
+		macview_setmouserelative(FALSE);
+#endif
 		wxPanel::ReleaseMouse();
 		SetCursor(wxNullCursor);
 		mousemng_showcursor();
@@ -272,7 +344,8 @@ void Np2Panel::OnSetFocus(wxFocusEvent &evt)
 
 void Np2Panel::OnKillFocus(wxFocusEvent &evt)
 {
-	/* release all held keys */
+	/* release all held keys, and the mouse (e.g. Command+Tab) */
 	wxkbd_reset();
+	ReleaseMouse();
 	evt.Skip();
 }

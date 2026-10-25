@@ -507,7 +507,7 @@ void boardsb16_reset(const NP2CFG *pConfig) {
 	if (g_mame_opl3[G_OPL3_INDEX]) {
 		if (samplerate != soundcfg.rate) {
 			YMF262Shutdown(g_mame_opl3[G_OPL3_INDEX]);
-			g_mame_opl3[G_OPL3_INDEX] = YMF262Init(14400000, soundcfg.rate);
+			g_mame_opl3[G_OPL3_INDEX] = YMF262Init(14400000, (soundcfg.rate ? soundcfg.rate : np2cfg.samplingrate));
 			samplerate = soundcfg.rate;
 		} else {
 			YMF262ResetChip(g_mame_opl3[G_OPL3_INDEX], samplerate);
@@ -591,9 +591,9 @@ void boardsb16_bind(void) {
 
 	if (!g_mame_opl3[G_OPL3_INDEX]) {
 #ifdef USE_MAME
-		g_mame_opl3[G_OPL3_INDEX] = YMF262Init(14400000, np2cfg.samplingrate);
+		g_mame_opl3[G_OPL3_INDEX] = YMF262Init(14400000, (soundcfg.rate ? soundcfg.rate : np2cfg.samplingrate));
 #endif
-		samplerate = np2cfg.samplingrate;
+		samplerate = soundcfg.rate;
 	}
 
 #if defined(SUPPORT_GAMEPORT)
@@ -606,8 +606,8 @@ void boardsb16_bind(void) {
 
 #ifdef USE_MAME
 	if (!g_mame_opl3[G_OPL3_INDEX]) {
-		g_mame_opl3[G_OPL3_INDEX] = YMF262Init(14400000, np2cfg.samplingrate);
-		samplerate = np2cfg.samplingrate;
+		g_mame_opl3[G_OPL3_INDEX] = YMF262Init(14400000, (soundcfg.rate ? soundcfg.rate : np2cfg.samplingrate));
+		samplerate = soundcfg.rate;
 	}
 #endif
 	opl3_bind(&g_opl3[G_OPL3_INDEX]); // MAME使用の場合Key Display用

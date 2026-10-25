@@ -28,6 +28,10 @@ static const char *s_candidates[] = {
 	"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
 	"/usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf",
 	"/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+#if defined(__APPLE__)
+	"/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
+	"/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+#endif
 	NULL
 };
 
