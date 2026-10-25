@@ -144,6 +144,7 @@ void np2oscfg_setdefault(void)
 	np2oscfg.winy = -1;
 	np2oscfg.winwidth = 640;
 	np2oscfg.winheight = 400;
+	np2oscfg.scrnmul = 1;
 
 	np2oscfg.cycle_shot_enabled = 0;
 

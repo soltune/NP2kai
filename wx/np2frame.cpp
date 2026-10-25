@@ -560,7 +560,7 @@ void Np2Frame::BuildMenuBar(void)
 		scrnMenu->AppendRadioItem(ID_SCREEN_X2,   "&x2 (1280x800)");
 		scrnMenu->AppendRadioItem(ID_SCREEN_X3,   "&x3 (1920x1200)");
 		scrnMenu->AppendRadioItem(ID_SCREEN_FULL, "&Full Screen");
-		scrnMenu->Check(ID_SCREEN_X1, true);
+		scrnMenu->Check(ID_SCREEN_X1 + np2oscfg.scrnmul - 1, true);
 		AppendSubArt(menuDisp, scrnMenu, "&Screen Size", wxART_FULL_SCREEN);
 	}
 	bar->Append(menuDisp, "&Display");
@@ -1252,6 +1252,16 @@ void Np2Frame::OnFullScreenChanged(bool full)
 	if (bar) bar->Check(ID_DISP_FULLSCREEN, full);
 }
 
+/* Return screen dimensions swapped when rotated 90°/270° */
+static void GetDisplaySize(int scale, int *outW, int *outH)
+{
+	int w, h;
+	scrnmng_getsize(&w, &h);
+	bool portrait = (scrnmode & SCRNMODE_ROTATE) != 0;
+	*outW = (portrait ? h : w) * scale;
+	*outH = (portrait ? w : h) * scale;
+}
+
 void Np2Frame::OnDispRotate(wxCommandEvent &evt)
 {
 	/* Map menu item index to SCRNMODE rotate bits:
@@ -1274,9 +1284,8 @@ void Np2Frame::OnDispRotate(wxCommandEvent &evt)
 		/* Resize window to match orientation (90°/270° → portrait) */
 		if (!IsFullScreenNow()) {
 			int w, h;
-			scrnmng_getsize(&w, &h);
-			bool portrait = (newmode & SCRNMODE_ROTATE) != 0;
-			SetClientSize(portrait ? h : w, portrait ? w : h);
+			GetDisplaySize(np2oscfg.scrnmul, &w, &h);
+			SetClientSize(w, h);
 		}
 	}
 }
@@ -1345,36 +1354,18 @@ void Np2Frame::OnViewKeyDisp(wxCommandEvent &evt)
 
 /* ---- Screen size handlers ---- */
 
-/* Return screen dimensions swapped when rotated 90°/270° */
-static void GetDisplaySize(int scale, int *outW, int *outH)
+void Np2Frame::SetScreenScale(int scale)
 {
+	np2oscfg.scrnmul = (UINT8)scale;
+	sysmng_update(SYS_UPDATEOSCFG);
 	int w, h;
-	scrnmng_getsize(&w, &h);
-	bool portrait = (scrnmode & SCRNMODE_ROTATE) != 0;
-	*outW = (portrait ? h : w) * scale;
-	*outH = (portrait ? w : h) * scale;
-}
-
-void Np2Frame::OnScreenX1(wxCommandEvent & /*evt*/)
-{
-	int w, h;
-	GetDisplaySize(1, &w, &h);
+	GetDisplaySize(scale, &w, &h);
 	SetClientSize(w, h);
 }
 
-void Np2Frame::OnScreenX2(wxCommandEvent & /*evt*/)
-{
-	int w, h;
-	GetDisplaySize(2, &w, &h);
-	SetClientSize(w, h);
-}
-
-void Np2Frame::OnScreenX3(wxCommandEvent & /*evt*/)
-{
-	int w, h;
-	GetDisplaySize(3, &w, &h);
-	SetClientSize(w, h);
-}
+void Np2Frame::OnScreenX1(wxCommandEvent & /*evt*/) { SetScreenScale(1); }
+void Np2Frame::OnScreenX2(wxCommandEvent & /*evt*/) { SetScreenScale(2); }
+void Np2Frame::OnScreenX3(wxCommandEvent & /*evt*/) { SetScreenScale(3); }
 
 void Np2Frame::OnScreenFull(wxCommandEvent & /*evt*/)
 {

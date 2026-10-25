@@ -177,6 +177,7 @@ private:
 
 	void OnViewKeyDisp(wxCommandEvent &evt);
 
+	void SetScreenScale(int scale);
 	void OnScreenX1(wxCommandEvent &evt);
 	void OnScreenX2(wxCommandEvent &evt);
 	void OnScreenX3(wxCommandEvent &evt);

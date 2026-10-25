@@ -49,11 +49,10 @@ bool Np2App::OnInit()
 	}
 	m_initialized = true;
 
-	/* Determine initial window size */
-	int w = (int)np2oscfg.winwidth;
-	int h = (int)np2oscfg.winheight;
-	if (w < 320) w = 640;
-	if (h < 200) h = 400;
+	/* Determine initial window size from the saved Screen Size */
+	if (np2oscfg.scrnmul < 1 || np2oscfg.scrnmul > 3) np2oscfg.scrnmul = 1;
+	int w = FULLSCREEN_WIDTH  * np2oscfg.scrnmul;
+	int h = FULLSCREEN_HEIGHT * np2oscfg.scrnmul;
 
 	wxPoint pos(wxDefaultPosition);
 	if (np2oscfg.winx >= 0 && np2oscfg.winy >= 0)

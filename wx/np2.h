@@ -96,6 +96,7 @@ typedef struct {
 	int		winy;
 	UINT	winwidth;
 	UINT	winheight;
+	UINT8	scrnmul;	/* Display > Screen Size: x1-x3 */
 
 	UINT8	cycle_shot_enabled;
 
