@@ -264,6 +264,7 @@ static const INITBL np2_tbl[] = {
 
 	{"keyboard",  INITYPE_UINT8,  &np2oscfg.KEYBOARD,  0},
 	{"F12_Copy",  INITYPE_UINT8,  &np2oscfg.F12KEY,    0},
+	{"ArrowTen",  INITYPE_BOOL,   &np2oscfg.arrowtenkey, 0},
 	{"Mouse_sw",  INITYPE_BOOL,   &np2oscfg.MOUSE_SW,  0},
 	{"Joypad1",   INITYPE_BOOL,   &np2oscfg.JOYPAD1,   0},
 	{"Joy1_Btn",  INITYPE_ARGH8,  np2oscfg.JOY1BTN,    JOY_NBUTTON},

@@ -77,6 +77,7 @@ enum {
 	/* Input */
 	ID_INPUT_CTRL_ALT_DEL,
 	ID_INPUT_PASTE,
+	ID_INPUT_ARROW_TENKEY,
 
 	/* View sub-windows */
 	ID_VIEW_KEYDISP,
@@ -172,6 +173,7 @@ private:
 
 	void OnInputCtrlAltDel(wxCommandEvent &evt);
 	void OnInputPaste(wxCommandEvent &evt);
+	void OnInputArrowTenkey(wxCommandEvent &evt);
 
 	void OnViewKeyDisp(wxCommandEvent &evt);
 

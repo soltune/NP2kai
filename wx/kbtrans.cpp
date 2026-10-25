@@ -177,9 +177,23 @@ static UINT8 wxkey_to_pc98(int keycode, int rawcode)
 	return NC;
 }
 
+/* cursor key -> numpad 8/4/6/2 when "Arrow Keys as Numpad" is on */
+static UINT8 arrow_to_tenkey(UINT8 kc)
+{
+	if (np2oscfg.arrowtenkey) {
+		switch (kc) {
+		case 0x3a: return 0x43;	/* UP    -> 8 */
+		case 0x3b: return 0x46;	/* LEFT  -> 4 */
+		case 0x3c: return 0x48;	/* RIGHT -> 6 */
+		case 0x3d: return 0x4b;	/* DOWN  -> 2 */
+		}
+	}
+	return kc;
+}
+
 void wxkbd_keydown(int keycode, int rawcode)
 {
-	UINT8 kc = wxkey_to_pc98(keycode, rawcode);
+	UINT8 kc = arrow_to_tenkey(wxkey_to_pc98(keycode, rawcode));
 	if (kc != NC && !key_states[kc]) {
 		key_states[kc] = true;
 		keystat_keydown(kc);
@@ -188,7 +202,7 @@ void wxkbd_keydown(int keycode, int rawcode)
 
 void wxkbd_keyup(int keycode, int rawcode)
 {
-	UINT8 kc = wxkey_to_pc98(keycode, rawcode);
+	UINT8 kc = arrow_to_tenkey(wxkey_to_pc98(keycode, rawcode));
 	if (kc != NC && key_states[kc]) {
 		key_states[kc] = false;
 		keystat_keyup(kc);

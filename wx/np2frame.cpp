@@ -8,6 +8,7 @@
 #include "scrnmng.h"
 #include "soundmng.h"
 #include "ini.h"
+#include "kbtrans.h"
 #include <pccore.h>
 #include <keystat.h>
 #include <sysmng.h>
@@ -314,6 +315,7 @@ wxBEGIN_EVENT_TABLE(Np2Frame, wxFrame)
 	/* Input */
 	EVT_MENU(ID_INPUT_CTRL_ALT_DEL, Np2Frame::OnInputCtrlAltDel)
 	EVT_MENU(ID_INPUT_PASTE,        Np2Frame::OnInputPaste)
+	EVT_MENU(ID_INPUT_ARROW_TENKEY,  Np2Frame::OnInputArrowTenkey)
 	/* View */
 	EVT_MENU(ID_VIEW_KEYDISP, Np2Frame::OnViewKeyDisp)
 	/* Screen */
@@ -567,6 +569,10 @@ void Np2Frame::BuildMenuBar(void)
 	wxMenu *menuInput = new wxMenu;
 	AppendArt(menuInput, ID_INPUT_CTRL_ALT_DEL, "Send Ctrl+Alt+Del\tCtrl+Alt+Del", "Send hardware reset sequence", wxART_GO_HOME);
 	AppendArt(menuInput, ID_INPUT_PASTE,        "Paste Clipboard Text\tCtrl+V", "Paste text from clipboard", wxART_PASTE);
+	menuInput->AppendSeparator();
+	menuInput->AppendCheckItem(ID_INPUT_ARROW_TENKEY, "&Arrow Keys as Numpad 8/4/6/2",
+	    "Send numpad 8/4/6/2 for the cursor keys (for games that move with the numpad)");
+	menuInput->Check(ID_INPUT_ARROW_TENKEY, np2oscfg.arrowtenkey != 0);
 	bar->Append(menuInput, "&Input");
 
 	/* --- Other --- */
@@ -1285,6 +1291,13 @@ void Np2Frame::OnInputCtrlAltDel(wxCommandEvent & /*evt*/)
 	keystat_keyup(0x39);
 	keystat_keyup(0x73);
 	keystat_keyup(0x74);
+}
+
+void Np2Frame::OnInputArrowTenkey(wxCommandEvent &evt)
+{
+	np2oscfg.arrowtenkey = evt.IsChecked() ? 1 : 0;
+	/* release everything so a key held across the switch cannot stick */
+	wxkbd_reset();
 }
 
 void Np2Frame::OnInputPaste(wxCommandEvent & /*evt*/)

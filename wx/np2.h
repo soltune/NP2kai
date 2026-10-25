@@ -98,6 +98,8 @@ typedef struct {
 	UINT	winheight;
 
 	UINT8	cycle_shot_enabled;
+
+	UINT8	arrowtenkey;	/* cursor keys -> numpad 8/4/6/2 */
 } NP2OSCFG;
 
 /* cycle screenshot (defined in np2.cpp) */
