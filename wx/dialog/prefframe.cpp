@@ -735,7 +735,6 @@ wxPanel *PrefFrame::BuildSndMixerPage(wxNotebook *nb)
 	addVol("Rhythm:", "vol_rhythm", 128, 0, 128);
 	addVol("CD-DA:",  "davolume",   128, 0, 255);
 	addVol("MIDI:",   "vol_midi",   128, 0, 128);
-	addVol("Seek:",   "MOTORVOL",   0,   0, 100);
 
 	/* Beep Volume */
 	gs->Add(new wxStaticText(page, wxID_ANY, "Beep Volume:"),
@@ -754,9 +753,6 @@ wxPanel *PrefFrame::BuildSndMixerPage(wxNotebook *nb)
 	cbWab->SetName("wabasw");
 	gs->Add(cbWab, wxGBPosition(row++, 0), wxGBSpan(1, 4));
 #endif
-	auto *cbSeek = new wxCheckBox(page, wxID_ANY, "HDD seek sound");
-	cbSeek->SetName("Seek_Snd");
-	gs->Add(cbSeek, wxGBPosition(row++, 0), wxGBSpan(1, 4));
 
 	gs->AddGrowableCol(1, 1);
 	page->SetSizer(new wxBoxSizer(wxVERTICAL));
@@ -1148,7 +1144,7 @@ wxPanel *PrefFrame::BuildFddPage(wxNotebook *nb)
 	gs->Add(new wxStaticText(page, wxID_ANY, "Seek Volume:"),
 	        wxGBPosition(row, 0), wxDefaultSpan, wxALIGN_CENTER_VERTICAL);
 	auto *seekvol = new wxSlider(page, wxID_ANY, 50, 0, 100,
-	                             wxDefaultPosition, wxSize(200, -1));
+	                             wxDefaultPosition, wxSize(200, -1), wxSL_HORIZONTAL | wxSL_LABELS);
 	seekvol->SetName("Seek_Vol");
 	gs->Add(seekvol, wxGBPosition(row, 1), wxGBSpan(1, 3), wxEXPAND);
 	row++;
@@ -2304,7 +2300,6 @@ void PrefFrame::LoadFromConfig(int tabId)
 		SetSpinByName(this, "vol_rhythm", (int)np2cfg.vol_rhythm);
 		SetSpinByName(this, "davolume",   (int)np2cfg.davolume);
 		SetSpinByName(this, "vol_midi",   (int)np2cfg.vol_midi);
-		SetSpinByName(this, "MOTORVOL",   (int)np2cfg.MOTORVOL);
 		{
 			int vol = np2cfg.BEEP_VOL & 3;
 			if (m_beepvol[vol]) m_beepvol[vol]->SetValue(true);
@@ -2312,7 +2307,6 @@ void PrefFrame::LoadFromConfig(int tabId)
 #if defined(SUPPORT_WAB)
 		SetCheckByName(this, "wabasw",   np2cfg.wabasw == 0);
 #endif
-		SetCheckByName(this, "Seek_Snd", np2cfg.MOTOR != 0);
 
 		/* 14 sub-tab */
 		for (int i = 0; i < 6; i++) {
@@ -2630,6 +2624,7 @@ void PrefFrame::LoadFromConfig(int tabId)
 			snprintf(name, sizeof(name), "FDDRIVE%d", i + 1);
 			SetCheckByName(this, name, ((np2cfg.fddequip >> i) & 1) != 0);
 		}
+		SetCheckByName(this, "Seek_Snd", np2cfg.MOTOR != 0);
 		SetSpinByName(this, "Seek_Vol",  (int)np2cfg.MOTORVOL);
 	}
 
@@ -3018,7 +3013,6 @@ void PrefFrame::SaveToConfig(void)
 	np2cfg.vol_rhythm = (UINT8)GetSpinByName(this, "vol_rhythm", 128);
 	np2cfg.davolume   = (UINT8)GetSpinByName(this, "davolume", 128);
 	np2cfg.vol_midi   = (UINT8)GetSpinByName(this, "vol_midi", 128);
-	np2cfg.MOTORVOL   = (UINT8)GetSpinByName(this, "MOTORVOL", 0);
 	for (int i = 0; i < 4; i++) {
 		if (m_beepvol[i] && m_beepvol[i]->GetValue()) {
 			np2cfg.BEEP_VOL = (UINT8)i; break;
@@ -3027,7 +3021,6 @@ void PrefFrame::SaveToConfig(void)
 #if defined(SUPPORT_WAB)
 	np2cfg.wabasw    = GetCheckByName(this, "wabasw") ? 0 : 1;
 #endif
-	np2cfg.MOTOR     = GetCheckByName(this, "Seek_Snd") ? 1 : 0;
 
 	/* 14 sub-tab */
 	for (int i = 0; i < 6; i++) {
@@ -3295,6 +3288,7 @@ void PrefFrame::SaveToConfig(void)
 		snprintf(name, sizeof(name), "FDDRIVE%d", i + 1);
 		if (GetCheckByName(this, name)) np2cfg.fddequip |= (UINT8)(1 << i);
 	}
+	np2cfg.MOTOR    = GetCheckByName(this, "Seek_Snd") ? 1 : 0;
 	np2cfg.MOTORVOL = (UINT8)GetSpinByName(this, "Seek_Vol", 50);
 
 	/* HDD / IDE type */
