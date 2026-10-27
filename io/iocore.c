@@ -8,6 +8,9 @@
 #include	<cbus/ideio.h>
 #include	<cbus/cs4231io.h>
 #include	"iocore16.tbl"
+
+/* debug monitor: sees every port access when set (size 1/2/4, dir 0=in 1=out) */
+void (*iocore_hook)(UINT port, UINT32 dat, int size, int dir) = NULL;
 #ifdef SUPPORT_LGY98
 #include	<network/lgy98.h>
 #endif
@@ -637,7 +640,7 @@ void iocore_bind(void)
 	iocore_cbbind(bindfn, NELEMENTS(bindfn));
 }
 
-void IOOUTCALL iocore_out8(UINT port, REG8 dat) {
+static void IOOUTCALL iocore_out8_body(UINT port, REG8 dat) {
 
 	IOFUNC	iof;
 
@@ -647,7 +650,7 @@ void IOOUTCALL iocore_out8(UINT port, REG8 dat) {
 	iof->ioout[port & 0xff](port, dat);
 }
 
-REG8 IOINPCALL iocore_inp8(UINT port) {
+static REG8 IOINPCALL iocore_inp8_body(UINT port) {
 
 	IOFUNC	iof;
 	REG8	ret;
@@ -659,7 +662,7 @@ REG8 IOINPCALL iocore_inp8(UINT port) {
 	return(ret);
 }
 
-void IOOUTCALL iocore_out16(UINT port, REG16 dat) {
+static void IOOUTCALL iocore_out16_body(UINT port, REG16 dat) {
 
 	IOFUNC	iof;
 
@@ -743,7 +746,7 @@ void IOOUTCALL iocore_out16(UINT port, REG16 dat) {
 	iof->ioout[port & 0xff](port, (UINT8)(dat >> 8));
 }
 
-REG16 IOINPCALL iocore_inp16(UINT port) {
+static REG16 IOINPCALL iocore_inp16_body(UINT port) {
 
 	IOFUNC	iof;
 	REG8	ret;
@@ -822,7 +825,7 @@ REG16 IOINPCALL iocore_inp16(UINT port) {
 	return((UINT16)((iof->ioinp[port & 0xff](port) << 8) + ret));
 }
 
-void IOOUTCALL iocore_out32(UINT port, UINT32 dat) {
+static void IOOUTCALL iocore_out32_body(UINT port, UINT32 dat) {
 
 	CPU_REMCLOCK -= iocore.busclock;
 #if defined(SUPPORT_PC9821)
@@ -848,11 +851,11 @@ void IOOUTCALL iocore_out32(UINT port, UINT32 dat) {
 //		return;
 //	}
 //#endif
-	iocore_out16(port, (UINT16)dat);
-	iocore_out16(port+2, (UINT16)(dat >> 16));
+	iocore_out16_body(port, (UINT16)dat);
+	iocore_out16_body(port+2, (UINT16)(dat >> 16));
 }
 
-UINT32 IOINPCALL iocore_inp32(UINT port) {
+static UINT32 IOINPCALL iocore_inp32_body(UINT port) {
 
 	UINT32	ret;
 
@@ -878,7 +881,63 @@ UINT32 IOINPCALL iocore_inp32(UINT port) {
 //		return ret;
 //	}
 //#endif
-	ret = iocore_inp16(port);
-	return(ret + (iocore_inp16(port+2) << 16));
+	ret = iocore_inp16_body(port);
+	return(ret + (iocore_inp16_body(port+2) << 16));
 }
 
+void IOOUTCALL iocore_out8(UINT port, REG8 dat) {
+
+	if (iocore_hook) {
+		(*iocore_hook)(port, dat, 1, 1);
+	}
+	iocore_out8_body(port, dat);
+}
+
+REG8 IOINPCALL iocore_inp8(UINT port) {
+
+	REG8	ret;
+
+	ret = iocore_inp8_body(port);
+	if (iocore_hook) {
+		(*iocore_hook)(port, ret, 1, 0);
+	}
+	return(ret);
+}
+
+void IOOUTCALL iocore_out16(UINT port, REG16 dat) {
+
+	if (iocore_hook) {
+		(*iocore_hook)(port, dat, 2, 1);
+	}
+	iocore_out16_body(port, dat);
+}
+
+REG16 IOINPCALL iocore_inp16(UINT port) {
+
+	REG16	ret;
+
+	ret = iocore_inp16_body(port);
+	if (iocore_hook) {
+		(*iocore_hook)(port, ret, 2, 0);
+	}
+	return(ret);
+}
+
+void IOOUTCALL iocore_out32(UINT port, UINT32 dat) {
+
+	if (iocore_hook) {
+		(*iocore_hook)(port, dat, 4, 1);
+	}
+	iocore_out32_body(port, dat);
+}
+
+UINT32 IOINPCALL iocore_inp32(UINT port) {
+
+	UINT32	ret;
+
+	ret = iocore_inp32_body(port);
+	if (iocore_hook) {
+		(*iocore_hook)(port, ret, 4, 0);
+	}
+	return(ret);
+}

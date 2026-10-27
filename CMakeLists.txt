@@ -316,6 +316,7 @@ list(APPEND NP2kai_WX_sources
 	"${CMAKE_CURRENT_SOURCE_DIR}/wx/np2panel.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/wx/np2.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/wx/np2mt.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/wx/dbgmon.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/wx/ini.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/wx/dosio.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/wx/scrnmng.cpp"

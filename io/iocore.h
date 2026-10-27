@@ -115,6 +115,7 @@ void iocore_cbbind(const FNIOBIND *pfn, UINT uCount);
 void iocore_reset(const NP2CFG *pConfig);
 void iocore_bind(void);
 
+extern void (*iocore_hook)(UINT port, UINT32 dat, int size, int dir);
 void IOOUTCALL iocore_out8(UINT port, REG8 dat);
 REG8 IOINPCALL iocore_inp8(UINT port);
 

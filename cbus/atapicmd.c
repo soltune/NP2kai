@@ -205,7 +205,7 @@ static int mediachangeflag = 0;
 extern REG8 cdchange_drv;
 void cdchange_timeoutproc(NEVENTITEM item);
 
-void atapicmd_a0(IDEDRV drv) {
+static void atapicmd_a0_body(IDEDRV drv) {
 
 	UINT32	lba, leng;
 	UINT8	cmd;
@@ -396,6 +396,22 @@ void atapicmd_a0(IDEDRV drv) {
 		TRACEOUT(("atapicmd: unknown command = %.2x", cmd));
 		sendabort(drv);
 		break;
+	}
+}
+
+/* debug monitor: called after each packet command with its CDB (drv->buf holds the reply) */
+void (*atapi_cmdhook)(IDEDRV drv, const UINT8 *cdb) = NULL;
+
+void atapicmd_a0(IDEDRV drv) {
+
+	UINT8	cdb[12];
+
+	if (atapi_cmdhook) {
+		CopyMemory(cdb, drv->buf, sizeof(cdb));
+	}
+	atapicmd_a0_body(drv);
+	if (atapi_cmdhook) {
+		(*atapi_cmdhook)(drv, cdb);
 	}
 }
 

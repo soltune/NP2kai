@@ -3,6 +3,7 @@
 #include <compiler.h>
 #include "np2frame.h"
 #include "np2mt.h"
+#include "dbgmon.h"
 #include "np2panel.h"
 #include "np2.h"
 #include "scrnmng.h"
@@ -385,6 +386,7 @@ Np2Frame::Np2Frame(const wxString &title, const wxPoint &pos, const wxSize &size
 
 	/* Multithread system must always be initialized (nevent mutex etc.) */
 	np2_multithread_initialize();
+	dbgmon_initialize();
 
 	if (np2wabcfg.multithread) {
 		/* Emulator thread mode: timer is UI-refresh only */

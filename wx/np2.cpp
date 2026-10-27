@@ -15,6 +15,7 @@
 #include "sysmng.h"
 #include "taskmng.h"
 #include "ini.h"
+#include "dbgmon.h"
 #include <pccore.h>
 #include <statsave.h>
 #include <io/iocore.h>
@@ -491,6 +492,10 @@ static void processwait(UINT cnt)
 
 void np2_exec(void)
 {
+	if (dbgmon_poll()) {					// paused from the debug monitor
+		taskmng_sleep(5);
+		return;
+	}
 	taskmng_rol();
 	autokey_exec();
 

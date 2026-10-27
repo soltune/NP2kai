@@ -51,6 +51,9 @@
 
 sigjmp_buf exec_1step_jmpbuf;
 
+/* debug monitor: called before every instruction when set */
+void (*cpu_stephook)(void) = NULL;
+
 #if defined(IA32_INSTRUCTION_TRACE)
 typedef struct {
 	CPU_REGS		regs;
@@ -81,6 +84,9 @@ exec_1step(void)
 
 	CPU_PREV_EIP = CPU_EIP;
 	CPU_STATSAVE.cpu_inst = CPU_STATSAVE.cpu_inst_default;
+	if (cpu_stephook) {
+		(*cpu_stephook)();
+	}
 
 #if defined(ENABLE_TRAP)
 	steptrap(CPU_CS, CPU_EIP);
@@ -284,6 +290,9 @@ exec_allstep(void)
 
 		CPU_PREV_EIP = CPU_EIP;
 		CPU_STATSAVE.cpu_inst = CPU_STATSAVE.cpu_inst_default;
+		if (cpu_stephook) {
+			(*cpu_stephook)();
+		}
 
 #if defined(ENABLE_TRAP)
 		steptrap(CPU_CS, CPU_EIP);

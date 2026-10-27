@@ -448,6 +448,7 @@ extern UINT32		opCache;
 #define	CPU_EMSPTR	i386core.e.ems
 
 extern sigjmp_buf	exec_1step_jmpbuf;
+extern void		(*cpu_stephook)(void);
 
 /*
  * CPUID
