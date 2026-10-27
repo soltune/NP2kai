@@ -1174,7 +1174,7 @@ wxPanel *PrefFrame::BuildHddPage(wxNotebook *nb)
 		int row = 0;
 
 		static const char *idelabels[4] = {
-			"Master-Primary:", "Master-Secondary:", "Slave-Primary:", "Slave-Secondary:"
+			"Primary Master:", "Primary Slave:", "Secondary Master:", "Secondary Slave:"
 		};
 		for (int i = 0; i < 4; i++) {
 			gs->Add(new wxStaticText(ide, wxID_ANY, idelabels[i]),

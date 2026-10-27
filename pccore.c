@@ -721,7 +721,7 @@ void pccore_setdefault(void) {
       {OEMTEXT(""), OEMTEXT(""), OEMTEXT(""), OEMTEXT("")},
 #if defined(SUPPORT_IDEIO)
       {OEMTEXT(""), OEMTEXT(""), OEMTEXT(""), OEMTEXT("")},
-      {SXSIDEV_HDD, SXSIDEV_CDROM, SXSIDEV_HDD, SXSIDEV_HDD},
+      {SXSIDEV_HDD, SXSIDEV_HDD, SXSIDEV_CDROM, SXSIDEV_HDD}, // CD-DA plays only on IDE #3
       {OEMTEXT(""), OEMTEXT(""), OEMTEXT(""), OEMTEXT("")},
       0,
       0,

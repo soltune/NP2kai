@@ -202,6 +202,13 @@ ninja -C build-mac wxnp21kai
    - Keys are mapped by physical position (JIS layout): F11-F15 = VF1-VF5,
      英数 = XFER, かな = KANA. Use an English input source while playing.
      Command+F5/F7/F8 = Start/Pause, Load/Save State.
+   - Known limitation: CD-DA (CD audio tracks) plays only when the CD-ROM drive is
+     the Secondary Master (`IDE3TYPE = 2` in `wxnp21kai.toml`). On another IDE position
+     the data tracks read normally, but audio never starts and its position never
+     advances, so games that wait for a track to finish hang (Policenauts stops at the
+     KONAMI logo). New configuration files put the CD-ROM on the Secondary Master.
+     If an older file has it on the Primary Slave (`IDE2TYPE = 2`), move it to the
+     Secondary Master in Preferences > IDE.
 
 #### Build
 1. Change directory to NP2kai.
