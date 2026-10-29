@@ -478,6 +478,18 @@ BOOL pcm86gen_intrq(int fromFMTimer)
 	}
 	if (pcm86->irqflag)
 	{
+		// フラグを 1 で読んだドライバがデータを補充して FIFO が割り込み発生量を超えたら、
+		// クリアされるまでフラグは 0 に見える（実機ではデータ量が戻ればフラグも落ちる）。
+		// これがないと、割り込み処理の途中で入った別の割り込みが PCM の処理を二重に始める
+		// （Star Cruiser 2 のドライバは割り込み処理の中で DOS を呼ぶので DOS が壊れる）
+		if (pcm86->irqfill)
+		{
+			sound_sync();
+			if (!(pcm86->virbuf <= pcm86->fifosize || pcm86->realbuf > pcm86->stepmask && pcm86->realbuf <= pcm86->fifosize))
+			{
+				return FALSE;
+			}
+		}
 		return TRUE;
 	}
 	if (!nevent_iswork(NEVENT_86PCM)) {

@@ -89,6 +89,8 @@ void IOOUTCALL pcm86_oa468(UINT port, REG8 val) {
 	{
 		g_pcm86.irqflag = 0;
 		g_pcm86.irqline = 0;
+		g_pcm86.irqseen = 0;
+		g_pcm86.irqfill = 0;
 		if (g_pcm86.virbuf == 0) {
 			// WORKAROUND: 割り込みクリア時にバッファが空の状態だったら、長めの割り込み待ちを入れる
 			g_pcm86.lastclockforwait = CPU_CLOCK + CPU_BASECLOCK - CPU_REMCLOCK;
@@ -185,6 +187,9 @@ void IOOUTCALL pcm86_oa46c(UINT port, REG8 val) {
 	}
 //	g_pcm86.write = 1;
 	g_pcm86.reqirq = 1;
+	if (g_pcm86.irqseen) {
+		g_pcm86.irqfill = 1;
+	}
 
 	// WORKAROUND: ウェイト時間はfifosizeに比例するものとする 根拠なし　元のdatawriteirqwaitは8192の場合の実験値
 	if (g_pcm86.fifosize < 8192) {
@@ -284,6 +289,7 @@ REG8 IOINPCALL pcm86_ia468(UINT port) {
 #if 1
 	if (pcm86gen_intrq(0)) {
 		ret |= 0x10;
+		g_pcm86.irqseen = 1;
 	}
 #elif 1		// むしろこう？
 	if (g_pcm86.fifo & 0x20) {

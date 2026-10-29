@@ -84,6 +84,8 @@ typedef struct {
 	UINT64	stepclock;
 
 	UINT8	irqline;			/*!< FIFO割り込みで割り込み線を上げている (fmboard_irqline) */
+	UINT8	irqseen;			/*!< ドライバが割り込みフラグを 1 で読んだ（クリアまで） */
+	UINT8	irqfill;			/*!< その後にデータが書き込まれた（クリアまで） */
 } _PCM86, *PCM86;
 
 typedef struct { // ステートセーブ互換性維持用（変更禁止）
