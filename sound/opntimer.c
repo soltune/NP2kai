@@ -78,11 +78,15 @@ void fmport_a(NEVENTITEM item)
 {
 	POPNA opna = (POPNA)item->userData;
 	BOOL intreq = FALSE;
+	BOOL lineup;
 
 	if(!opna) return;
 
 	if (item->flag & NEVENT_SETEVENT)
 	{
+		/* the line is shared with the other timer and the 86-PCM: a request
+		 * is made only when it goes up (see fmboard_irqline) */
+		lineup = fmboard_irqline(opna->s.irq);
 		if(g_pcm86.irq==opna->s.irq){
 			intreq = pcm86gen_intrq(1);
 			if(!(opna->s.status & 0x01) && g_pcm86.irqflag){
@@ -94,7 +98,7 @@ void fmport_a(NEVENTITEM item)
 			opna->s.status |= 0x01;
 			intreq = TRUE;
 		}
-		if ((intreq) && (opna->s.irq != 0xff))
+		if ((intreq) && (!lineup) && (opna->s.irq != 0xff))
 		{
 			pic_setirq(opna->s.irq);
 //			TRACEOUT(("fm int-A"));
@@ -117,11 +121,15 @@ void fmport_b(NEVENTITEM item)
 {
 	POPNA opna = (POPNA)item->userData;
 	BOOL intreq = FALSE;
+	BOOL lineup;
 	
 	if(!opna) return;
 
 	if (item->flag & NEVENT_SETEVENT)
 	{
+		/* the line is shared with the other timer and the 86-PCM: a request
+		 * is made only when it goes up (see fmboard_irqline) */
+		lineup = fmboard_irqline(opna->s.irq);
 		if(g_pcm86.irq==opna->s.irq){
 			intreq = pcm86gen_intrq(1);
 			if(!(opna->s.status & 0x02) && g_pcm86.irqflag){
@@ -133,7 +141,7 @@ void fmport_b(NEVENTITEM item)
 			opna->s.status |= 0x02;
 			intreq = TRUE;
 		}
-		if ((intreq) && (opna->s.irq != 0xff))
+		if ((intreq) && (!lineup) && (opna->s.irq != 0xff))
 		{
 			pic_setirq(opna->s.irq);
 //			TRACEOUT(("fm int-B"));
@@ -218,7 +226,8 @@ void opna_settimer(POPNA opna, REG8 cData)
 	if ((!(cData & 0x03) || (cData & 0x30)) && (opna->s.irq != 0xff))
 	{
 		PCM86 pcm86 = &g_pcm86;
-		if(pcm86->irq!=opna->s.irq || !pcm86->irqflag){
+		/* keep the request while the other flags still hold the line up */
+		if((pcm86->irq!=opna->s.irq || !pcm86->irqflag) && !fmboard_irqline(opna->s.irq)){
 			pic_resetirq(opna->s.irq);
 		}
 	}

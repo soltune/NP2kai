@@ -82,6 +82,8 @@ typedef struct {
 	
 	UINT64	lastclock;
 	UINT64	stepclock;
+
+	UINT8	irqline;			/*!< FIFO割り込みで割り込み線を上げている (fmboard_irqline) */
 } _PCM86, *PCM86;
 
 typedef struct { // ステートセーブ互換性維持用（変更禁止）

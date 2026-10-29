@@ -150,9 +150,12 @@ void pcm86_cb(NEVENTITEM item)
 		adjustbuf = (SINT32)(((SINT64)pcm86->virbuf * 4 + pcm86->realbuf) / 5);
 		if (pcm86->virbuf <= pcm86->fifosize || pcm86->realbuf > pcm86->stepmask && adjustbuf <= pcm86->fifosize)
 		{
+			// 割り込み線がすでに上がっていれば新しい割り込み要求にはならない (fmboard_irqline)
+			BOOL lineup = fmboard_irqline(pcm86->irq);
 			pcm86->reqirq = 0;
 			pcm86->irqflag = 1;
-			if (pcm86->irq != 0xff)
+			pcm86->irqline = 1;
+			if ((pcm86->irq != 0xff) && (!lineup))
 			{
 				pic_setirq(pcm86->irq);
 			}

@@ -43,6 +43,8 @@ void fmboard_updatevolume(void);
 void fmboard_extreg(void (*ext)(REG8 enable));
 void fmboard_extenable(REG8 enable);
 
+BOOL fmboard_irqline(REG8 irq);
+
 void fmboard_construct(void);
 void fmboard_destruct(void);
 void fmboard_reset(const NP2CFG *pConfig, SOUNDID nSoundID);

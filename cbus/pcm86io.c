@@ -88,10 +88,16 @@ void IOOUTCALL pcm86_oa468(UINT port, REG8 val) {
 	if ((!(val & 0x10)))
 	{
 		g_pcm86.irqflag = 0;
+		g_pcm86.irqline = 0;
 		if (g_pcm86.virbuf == 0) {
 			// WORKAROUND: 割り込みクリア時にバッファが空の状態だったら、長めの割り込み待ちを入れる
 			g_pcm86.lastclockforwait = CPU_CLOCK + CPU_BASECLOCK - CPU_REMCLOCK;
 		}
+	}
+	// 割り込み禁止で割り込み線も下がる
+	if (!(val & 0x20))
+	{
+		g_pcm86.irqline = 0;
 	}
 	// 割り込み条件を満たしていれば強制的に割り込む　ポリスノーツ用
 	if (g_pcm86.virbuf <= g_pcm86.fifosize)

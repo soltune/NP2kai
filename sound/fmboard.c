@@ -151,6 +151,45 @@ void fmboard_extenable(REG8 enable) {
 	}
 }
 
+/**
+ * Level of a sound interrupt line
+ * The timer flags of the OPNAs and the FIFO interrupt of the 86-PCM that use
+ * the same IRQ drive one line, and the PIC is edge triggered: a source that
+ * comes up while the line is already up does not request another interrupt.
+ * (Requesting one anyway re-entered drivers that send EOI before chaining to
+ * the next handler: Star Cruiser II froze on its logo.)
+ * The 86-PCM counts only while its request is pending or in service, so a
+ * flag that nobody clears cannot hold the line for ever.
+ * @param[in] irq The IRQ
+ * @retval TRUE The line is up
+ */
+BOOL fmboard_irqline(REG8 irq)
+{
+	UINT i;
+	PICITEM pi;
+	REG8 bit;
+
+	if (irq == 0xff)
+	{
+		return FALSE;
+	}
+	for (i = 0; i < NELEMENTS(g_opna); i++)
+	{
+		if ((g_opna[i].s.irq == irq) && (g_opna[i].s.status & 0x03))
+		{
+			return TRUE;
+		}
+	}
+	pi = &pic.pi[(irq >> 3) & 1];
+	bit = 1 << (irq & 7);
+	if ((g_pcm86.irq == irq) && (g_pcm86.irqline) && (g_pcm86.fifo & 0x20) &&
+		((pi->irr | pi->isr) & bit))
+	{
+		return TRUE;
+	}
+	return FALSE;
+}
+
 
 
 // ----
