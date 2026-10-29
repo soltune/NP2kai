@@ -57,6 +57,8 @@ void pic_irq(void);
 void pic_setirq(REG8 irq);
 void pic_resetirq(REG8 irq);
 
+extern void (*pic_hook)(REG8 irq, int delivered);
+
 void picmask(NEVENTITEM item);
 
 void pic_initialize(void);

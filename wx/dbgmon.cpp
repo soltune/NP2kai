@@ -12,6 +12,8 @@
 
 #if defined(CPUCORE_IA32)
 
+#include "mousemng.h"
+
 #include <cpucore.h>
 #include <pccore.h>
 #include <keystat.h>
@@ -20,6 +22,7 @@
 #include <cbus/atapicmd.h>
 #include <fdd/sxsi.h>
 #include <vram/scrnsave.h>
+#include <sound/fmboard.h>
 
 #include <string>
 #include <vector>
@@ -29,12 +32,14 @@
 #include <mutex>
 #include <thread>
 #include <atomic>
+#include <chrono>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 #include <unistd.h>
+#include <dlfcn.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -235,6 +240,46 @@ static std::string cd_text(void)
 	return s;
 }
 
+/* sound board interrupt sources: OPNA timer flags, 86-PCM FIFO interrupt,
+ * the line they share and the PIC */
+static std::string snd_text(void)
+{
+	std::string s;
+	for (UINT i = 0; i < NELEMENTS(g_opna); i++) {
+		const OPNA &o = g_opna[i];
+		if (o.s.irq == 0xff) {
+			continue;
+		}
+		std::string run;
+		if (i < 2) {
+			run = fmt(", timer A %s, timer B %s",
+			          nevent_iswork(i ? NEVENT_FMTIMER2A : NEVENT_FMTIMERA) ? "running" : "stopped",
+			          nevent_iswork(i ? NEVENT_FMTIMER2B : NEVENT_FMTIMERB) ? "running" : "stopped");
+		}
+		s += fmt("opna%u: irq %u, status %02x, reg 24-27 %02x %02x %02x %02x%s\n", i, o.s.irq,
+		         o.s.status, o.s.reg[0x24], o.s.reg[0x25], o.s.reg[0x26], o.s.reg[0x27], run.c_str());
+	}
+	if (g_pcm86.irq != 0xff) {
+		s += fmt("pcm86: irq %u, fifo %02x, irqflag %u, irqline %u, irqseen %u, irqfill %u, reqirq %u, virbuf %d, fifosize %d, event %s\n",
+		         g_pcm86.irq, g_pcm86.fifo, g_pcm86.irqflag, g_pcm86.irqline, g_pcm86.irqseen, g_pcm86.irqfill,
+		         g_pcm86.reqirq, g_pcm86.virbuf, g_pcm86.fifosize, nevent_iswork(NEVENT_86PCM) ? "scheduled" : "none");
+	}
+	for (UINT irq = 0; irq < 16; irq++) {
+		bool used = (g_pcm86.irq == irq);
+		for (UINT i = 0; i < NELEMENTS(g_opna); i++) {
+			used = used || (g_opna[i].s.irq == irq);
+		}
+		if (used) {
+			const _PICITEM &p = pic.pi[irq >> 3];
+			UINT bit = 1 << (irq & 7);
+			s += fmt("irq %u: line %s, pic imr %d irr %d isr %d\n", irq,
+			         fmboard_irqline((REG8)irq) ? "up" : "down",
+			         (p.imr & bit) ? 1 : 0, (p.irr & bit) ? 1 : 0, (p.isr & bit) ? 1 : 0);
+		}
+	}
+	return s;
+}
+
 /* ---- collectors ---- */
 
 /* hot: CS:EIP histogram over the next N instructions */
@@ -247,8 +292,143 @@ static std::map<UINT64, UINT32> s_hotBase;	/* key -> linear address */
 static UINT32 s_traceLeft = 0;
 static std::vector<std::string> s_trace;
 
+/* history: a ring of the last N instructions with their code bytes and
+ * registers, kept until a break range is entered, which freezes it and
+ * pauses the machine (the bytes are disassembled offline) */
+struct HistEntry {
+	UINT32 lin, eip;
+	UINT32 eax, ebx, ecx, edx, esi, edi, ebp, esp;
+	UINT16 cs, ds, es, ss;
+	UINT32 eflags;
+	UINT8  mode;	/* 'r'eal, 'p'rotected, 'v'86; upper case = 32-bit code */
+	UINT8  code[11];
+};
+static std::vector<HistEntry> s_hist;
+static size_t s_histPos = 0;
+static UINT64 s_histCount = 0;
+static bool s_histOn = false;
+/* break conditions: any of them pauses the machine */
+struct BreakCond {
+	UINT32 lo, hi;		/* linear range of CS:EIP */
+	int    sreg;		/* segment register index that must hold sregval, or -1 */
+	UINT16 sregval;
+	int    iflag;		/* IF must be 0 or 1, or -1 */
+	int    nzaddr;		/* the byte at this linear address must be non-zero, or -1 */
+	std::string text;
+};
+static std::vector<BreakCond> s_brk;
+static bool s_brkArmed = false, s_brkHit = false;
+static size_t s_brkWhich = 0;
+static std::string s_brkNote;	/* set when a break has paused the machine */
+
+static void hist_record(void)
+{
+	HistEntry &e = s_hist[s_histPos];
+	e.cs = CPU_CS;
+	e.eip = CPU_EIP;
+	e.lin = CPU_STAT_SREGBASE(CPU_CS_INDEX) + CPU_EIP;
+	e.eax = CPU_EAX; e.ebx = CPU_EBX; e.ecx = CPU_ECX; e.edx = CPU_EDX;
+	e.esi = CPU_ESI; e.edi = CPU_EDI; e.ebp = CPU_EBP; e.esp = CPU_ESP;
+	e.ds = CPU_DS; e.es = CPU_ES; e.ss = CPU_SS;
+	e.eflags = CPU_EFLAG;
+	char m = !CPU_STAT_PM ? 'r' : CPU_STAT_VM86 ? 'v' : 'p';
+	e.mode = CPU_STATSAVE.cpu_inst_default.op_32 ? (m - 0x20) : m;
+	UINT32 p = lin2phys(e.lin);
+	for (UINT i = 0; i < sizeof(e.code); i++) {
+		if (i && ((e.lin + i) & 0xfff) == 0) {
+			p = lin2phys(e.lin + i) - i;
+		}
+		e.code[i] = (UINT8)memp_read8(p + i);
+	}
+	s_histPos = (s_histPos + 1) % s_hist.size();
+	s_histCount++;
+}
+
+static std::string hist_text(UINT n)
+{
+	size_t size = s_hist.size();
+	size_t have = (size_t)std::min<UINT64>(s_histCount, size);
+	n = (UINT)std::min<size_t>(n, have);
+	std::string s;
+	for (size_t i = 0; i < n; i++) {
+		const HistEntry &e = s_hist[(s_histPos + size - n + i) % size];
+		std::string code;
+		for (UINT j = 0; j < sizeof(e.code); j++) {
+			code += fmt("%02x", e.code[j]);
+		}
+		s += fmt("%c %04x:%08x %08x %s | eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x "
+		         "ebp %08x esp %08x ds %04x es %04x ss %04x fl %08x\n",
+		         e.mode, e.cs, e.eip, e.lin, code.c_str(), e.eax, e.ebx, e.ecx, e.edx,
+		         e.esi, e.edi, e.ebp, e.esp, e.ds, e.es, e.ss, e.eflags);
+	}
+	return s;
+}
+
+/* histio: the history entries that access a port range (the value read
+ * shows in the next entry's eax) or execute INT n, oldest first */
+static std::string histio_text(UINT lo, UINT hi, UINT n)
+{
+	size_t size = s_hist.size();
+	size_t have = (size_t)std::min<UINT64>(s_histCount, size);
+	n = (UINT)std::min<size_t>(n, have);
+	std::string s;
+	for (size_t i = 0; i < n; i++) {
+		const HistEntry &e = s_hist[(s_histPos + size - n + i) % size];
+		UINT k = 0;
+		while (k < 4 && (e.code[k] == 0x66 || e.code[k] == 0x67 || e.code[k] == 0x2e ||
+		                 e.code[k] == 0x26 || e.code[k] == 0x36 || e.code[k] == 0x3e ||
+		                 e.code[k] == 0x64 || e.code[k] == 0x65 || e.code[k] == 0xf2 || e.code[k] == 0xf3)) {
+			k++;
+		}
+		UINT8 op = e.code[k];
+		std::string what;
+		if (op >= 0xec && op <= 0xef) {
+			UINT port = e.edx & 0xffff;
+			if (port >= lo && port <= hi) {
+				what = fmt("%s %04x", (op & 2) ? "out" : "in ", port);
+			}
+		}
+		else if (op >= 0xe4 && op <= 0xe7) {
+			UINT port = e.code[k + 1];
+			if (port >= lo && port <= hi) {
+				what = fmt("%s %04x", (op & 2) ? "out" : "in ", port);
+			}
+		}
+		else if (op == 0xcd) {
+			what = fmt("int %02x", e.code[k + 1]);
+		}
+		if (what.empty()) {
+			continue;
+		}
+		UINT32 nexteax = (i + 1 < n) ? s_hist[(s_histPos + size - n + i + 1) % size].eax : 0;
+		s += fmt("%7u %c %04x:%08x %-8s eax %08x (next %08x) ebx %08x ecx %08x edx %08x\n",
+		         (UINT)i, e.mode, e.cs, e.eip, what.c_str(), e.eax, nexteax, e.ebx, e.ecx, e.edx);
+	}
+	return s;
+}
+
 static void stephook(void)
 {
+	if (s_histOn) {
+		hist_record();
+	}
+	if (s_brkArmed) {
+		UINT32 lin = CPU_STAT_SREGBASE(CPU_CS_INDEX) + CPU_EIP;
+		for (size_t i = 0; i < s_brk.size(); i++) {
+			const BreakCond &b = s_brk[i];
+			if (lin < b.lo || lin > b.hi ||
+			    (b.sreg >= 0 && CPU_REGS_SREG(b.sreg) != b.sregval) ||
+			    (b.iflag >= 0 && ((CPU_EFLAG & I_FLAG) ? 1 : 0) != b.iflag) ||
+			    (b.nzaddr >= 0 && read_lin((UINT32)b.nzaddr) == 0)) {
+				continue;
+			}
+			s_brkArmed = false;
+			s_brkHit = true;
+			s_brkWhich = i;
+			s_histOn = false;	/* freeze; dbgmon_poll pauses */
+			break;
+		}
+	}
 	if (s_hotLeft) {
 		UINT64 key = ((UINT64)CPU_CS << 32) | CPU_EIP;
 		s_hot[key]++;
@@ -263,7 +443,7 @@ static void stephook(void)
 		                      CPU_ESI, CPU_EDI, CPU_FLAG));
 		s_traceLeft--;
 	}
-	if (!s_hotLeft && !s_traceLeft) {
+	if (!s_hotLeft && !s_traceLeft && !s_histOn && !s_brkArmed) {
 		cpu_stephook = NULL;
 	}
 }
@@ -359,6 +539,153 @@ static void atapihook(IDEDRV drv, const UINT8 *cdb)
 	s_atapiLeft--;
 }
 
+/* irq: interrupt requests (pic_setirq) and deliveries per IRQ over a span
+ * of emulated time */
+static UINT32 s_irqReq[16], s_irqDel[16];
+static UINT32 s_irqStart = 0, s_irqLen = 0;
+static bool s_irqWait = false;
+
+/* the CPU clock count wraps (32 bits); differences of it stay right */
+static UINT32 emuclock(void)
+{
+	return (UINT32)(CPU_CLOCK + CPU_BASECLOCK - CPU_REMCLOCK);
+}
+
+/* irqlog: the last requests and deliveries, with the function that called
+ * pic_setirq and whether the IRQ was already pending or in service */
+struct IrqLogEntry {
+	UINT32 clock;
+	UINT32 eip;
+	UINT16 cs;
+	UINT8  irq, delivered, irr, isr;
+	void   *caller;
+};
+static IrqLogEntry s_irqLog[64];
+static UINT s_irqLogPos = 0;
+static UINT64 s_irqLogCount = 0;
+static bool s_irqLogOn = false;
+static int s_irqLogOnly = -1;	/* log this IRQ only (-1 = all) */
+/* requests made while the IRQ is in service: they become pending and are
+ * taken as soon as the handler sends EOI and enables interrupts, which is
+ * how a driver that is not reentrant gets entered twice */
+static IrqLogEntry s_irqBusy[16];
+static UINT s_irqBusyPos = 0;
+static UINT64 s_irqBusyCount = 0;
+
+static void pichook(REG8 irq, int delivered)
+{
+	if (s_irqWait && irq < 16) {
+		(delivered ? s_irqDel : s_irqReq)[irq]++;
+	}
+	if (s_irqLogOn && (s_irqLogOnly < 0 || s_irqLogOnly == irq)) {
+		IrqLogEntry &e = s_irqLog[s_irqLogPos];
+		const _PICITEM &p = pic.pi[(irq >> 3) & 1];
+		UINT bit = 1 << (irq & 7);
+		e.clock = emuclock();
+		e.cs = CPU_CS;
+		e.eip = CPU_EIP;
+		e.irq = irq;
+		e.delivered = (UINT8)delivered;
+		e.irr = (p.irr & bit) ? 1 : 0;
+		e.isr = (p.isr & bit) ? 1 : 0;
+		/* frame 0 returns into pic_setirq / pic_irq, frame 1 into its caller
+		 * (macOS keeps frame pointers, so walking one frame up is safe) */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wframe-address"
+		e.caller = __builtin_return_address(1);
+#pragma clang diagnostic pop
+		s_irqLogPos = (s_irqLogPos + 1) % NELEMENTS(s_irqLog);
+		s_irqLogCount++;
+		if (!delivered && e.isr) {
+			s_irqBusy[s_irqBusyPos] = e;
+			s_irqBusyPos = (s_irqBusyPos + 1) % NELEMENTS(s_irqBusy);
+			s_irqBusyCount++;
+		}
+	}
+}
+
+static std::string irqlog_lines(const IrqLogEntry *ring, UINT size, UINT pos, UINT n)
+{
+	std::string s;
+	UINT32 prev = 0;
+	for (UINT i = 0; i < n; i++) {
+		const IrqLogEntry &e = ring[(pos + size - n + i) % size];
+		std::string who = "?";
+		Dl_info info;
+		if (e.caller && dladdr(e.caller, &info) && info.dli_sname) {
+			who = fmt("%s+0x%lx", info.dli_sname,
+			          (unsigned long)((const char *)e.caller - (const char *)info.dli_saddr));
+		}
+		double us = i ? (UINT32)(e.clock - prev) * 1e6 / pccore.realclock : 0;
+		prev = e.clock;
+		s += fmt("%10.1f  irq %2u %-9s %-28s at %04x:%08x  irr %u isr %u\n", us, e.irq,
+		         e.delivered ? "delivered" : "request", e.delivered ? "" : who.c_str(),
+		         e.cs, e.eip, e.irr, e.isr);
+	}
+	return s;
+}
+
+static std::string irqlog_text(UINT n)
+{
+	UINT size = NELEMENTS(s_irqLog);
+	n = (UINT)std::min<UINT64>(std::min(n, size), s_irqLogCount);
+	std::string s = fmt("%llu logged, last %u (time in us from the previous line; irr/isr: "
+	                    "before a request, after a delivery)\n", (unsigned long long)s_irqLogCount, n);
+	s += irqlog_lines(s_irqLog, size, s_irqLogPos, n);
+	UINT busy = (UINT)std::min<UINT64>(s_irqBusyCount, NELEMENTS(s_irqBusy));
+	s += fmt("%llu requests while the IRQ was in service, last %u:\n",
+	         (unsigned long long)s_irqBusyCount, busy);
+	s += irqlog_lines(s_irqBusy, NELEMENTS(s_irqBusy), s_irqBusyPos, busy);
+	return s;
+}
+
+static std::string irq_text(void)
+{
+	double sec = (double)s_irqLen / pccore.realclock;
+	std::string s = fmt("%.2f s of emulated time\n", sec);
+	for (int i = 0; i < 16; i++) {
+		if (s_irqReq[i] || s_irqDel[i]) {
+			s += fmt("irq %2d: requested %7u (%8.1f/s), delivered %7u (%8.1f/s)\n", i,
+			         s_irqReq[i], s_irqReq[i] / sec, s_irqDel[i], s_irqDel[i] / sec);
+		}
+	}
+	return s;
+}
+
+/* key: held keys and when to release them (games that poll the key state
+ * miss a press and release sent in the same instant) */
+static std::vector<std::pair<REG8, std::chrono::steady_clock::time_point> > s_keyRelease;
+/* click: mouse buttons held the same way (0 = left, 1 = right) */
+static std::vector<std::pair<int, std::chrono::steady_clock::time_point> > s_btnRelease;
+
+static void release_keys(bool all)
+{
+	auto now = std::chrono::steady_clock::now();
+	for (size_t i = 0; i < s_keyRelease.size(); ) {
+		if (all || now >= s_keyRelease[i].second) {
+			keystat_keyup(s_keyRelease[i].first);
+			s_keyRelease.erase(s_keyRelease.begin() + i);
+		}
+		else {
+			i++;
+		}
+	}
+	for (size_t i = 0; i < s_btnRelease.size(); ) {
+		if (all || now >= s_btnRelease[i].second) {
+			if (s_btnRelease[i].first) {
+				mousemng_onright(FALSE);
+			}
+			else {
+				mousemng_onleft(FALSE);
+			}
+			s_btnRelease.erase(s_btnRelease.begin() + i);
+		}
+		else {
+			i++;
+		}
+	}
+}
+
 static std::string join(const std::vector<std::string> &v)
 {
 	std::string s;
@@ -392,6 +719,20 @@ static void finish_collectors(void)
 		atapi_cmdhook = NULL;
 		reply(join(s_atapi));
 	}
+	if (s_irqWait && (UINT32)(emuclock() - s_irqStart) >= s_irqLen) {
+		s_irqWait = false;
+		if (!s_irqLogOn) {
+			pic_hook = NULL;
+		}
+		reply(irq_text());
+	}
+	if (s_brkHit) {
+		/* no reply here: a client waiting for it would keep the port
+		 * busy; 'status' reports the break instead */
+		s_brkHit = false;
+		s_paused = true;
+		s_brkNote = "break: " + s_brk[s_brkWhich].text + ", 'hist N' shows the instructions before it";
+	}
 }
 
 /* ---- commands ---- */
@@ -404,11 +745,28 @@ static const char *s_help =
 	"trace [N]                disassemble the next N instructions as they run (default 200)\n"
 	"io LO[-HI] [N] [all]     log the next N port accesses in the range (repeats folded unless 'all')\n"
 	"atapi [N]                log the next N ATAPI packet commands with their replies\n"
+	"irq [SEC]                count interrupt requests and deliveries per IRQ over SEC seconds\n"
+	"                         of emulated time (default 1)\n"
+	"irqlog on [IRQ] | off    keep the last 64 requests/deliveries (with the caller of pic_setirq)\n"
+	"irqlog [N]               print the last N of them\n"
+	"history [N]              keep the last N instructions (code bytes, registers); 0 = off\n"
+	"break LO[-HI] [ss=XXXX] [if=0|1] [nz=LINEAR]\n"
+	"                         add a condition: CS:EIP in the linear range (with that segment\n"
+	"                         register value / interrupt flag / a non-zero byte at that linear\n"
+	"                         address, e.g. DOS's InDOS flag); the first one met freezes\n"
+	"                         history and pauses ('status' shows it). 'break clear' removes\n"
+	"                         them. Start 'history' first to keep the instructions before it\n"
+	"hist [N]                 print the last N history entries (mode cs:eip linear bytes | regs)\n"
+	"histio LO[-HI] [N]       the history entries (of the last N) that access those ports or\n"
+	"                         execute INT n, oldest first, numbered from the oldest\n"
 	"stop                     end the collectors now and send what they have\n"
 	"cd                       CD-DA state of the IDE CD-ROM drives\n"
+	"snd                      sound board interrupt sources (OPNA timers, 86-PCM) and the PIC\n"
 	"pause | continue         stop or resume emulation\n"
 	"screenshot FILE.bmp      save the emulated screen as it is drawn now\n"
-	"key HEX [HEX...]         press and release PC-98 key codes (e.g. key 1c = RETURN)\n"
+	"key HEX [HEX...] [/MS]   press PC-98 key codes together, release after MS (default 100)\n"
+	"move DX DY               move the mouse by DX, DY\n"
+	"click [l|r] [/MS]        press a mouse button, release after MS (default 100)\n"
 	"help\n";
 
 static std::vector<std::string> split(const std::string &s)
@@ -436,7 +794,8 @@ static void run_command(const std::string &line)
 		reply(s_help);
 	}
 	else if (c == "status" || c == "regs") {
-		reply(std::string(s_paused ? "paused\n" : "running\n") + regs_text());
+		std::string st = !s_paused ? "running" : s_brkNote.empty() ? "paused" : "paused (" + s_brkNote + ")";
+		reply(st + "\n" + regs_text());
 	}
 	else if (c == "mem" && a.size() >= 2) {
 		UINT32 addr;
@@ -492,15 +851,122 @@ static void run_command(const std::string &line)
 		s_atapiWait = true;
 		atapi_cmdhook = atapihook;
 	}
+	else if (c == "irq") {
+		double sec = (a.size() >= 2) ? strtod(a[1].c_str(), NULL) : 1.0;
+		memset(s_irqReq, 0, sizeof(s_irqReq));
+		memset(s_irqDel, 0, sizeof(s_irqDel));
+		s_irqLen = (UINT32)(std::min(std::max(sec, 0.01) * pccore.realclock, 4.0e9));
+		s_irqStart = emuclock();
+		s_irqWait = true;
+		pic_hook = pichook;
+	}
+	else if (c == "irqlog") {
+		if (a.size() >= 2 && a[1] == "on") {
+			s_irqLogOnly = (a.size() >= 3) ? atoi(a[2].c_str()) : -1;
+			s_irqLogPos = 0;
+			s_irqLogCount = 0;
+			s_irqBusyPos = 0;
+			s_irqBusyCount = 0;
+			s_irqLogOn = true;
+			pic_hook = pichook;
+			reply("logging");
+		}
+		else if (a.size() >= 2 && a[1] == "off") {
+			s_irqLogOn = false;
+			if (!s_irqWait) {
+				pic_hook = NULL;
+			}
+			reply("off");
+		}
+		else {
+			reply(irqlog_text((a.size() >= 2) ? (UINT)strtoul(a[1].c_str(), NULL, 10) : 32));
+		}
+	}
+	else if (c == "history") {
+		UINT n = (a.size() >= 2) ? (UINT)strtoul(a[1].c_str(), NULL, 10) : 4000;
+		s_histOn = false;
+		s_hist.assign(std::min(n, 4000000u), HistEntry());
+		s_histPos = 0;
+		s_histCount = 0;
+		if (!s_hist.empty()) {
+			s_histOn = true;
+			cpu_stephook = stephook;
+		}
+		reply(s_histOn ? fmt("recording the last %u instructions", n) : std::string("history off"));
+	}
+	else if (c == "break" && a.size() >= 2 && a[1] == "clear") {
+		s_brk.clear();
+		s_brkArmed = false;
+		reply("no break conditions");
+	}
+	else if (c == "break" && a.size() >= 2) {
+		/* break LO[-HI] [ss=XXXX] [if=0|1]: adds a condition (the linear
+		 * address range of CS:EIP, optionally a segment register value and
+		 * the interrupt flag); any of them pauses. Without 'history' first
+		 * only the conditions are checked, which costs little speed */
+		static const char *segs[] = {"es", "cs", "ss", "ds", "fs", "gs"};
+		BreakCond b;
+		size_t dash = a[1].find('-');
+		b.lo = (UINT32)strtoul(a[1].c_str(), NULL, 16);
+		b.hi = (dash != std::string::npos) ? (UINT32)strtoul(a[1].c_str() + dash + 1, NULL, 16) : b.lo;
+		b.sreg = -1;
+		b.sregval = 0;
+		b.iflag = -1;
+		b.nzaddr = -1;
+		b.text = fmt("%08x-%08x", b.lo, b.hi);
+		for (size_t j = 2; j < a.size(); j++) {
+			if (a[j].size() > 3 && a[j][2] == '=') {
+				if (a[j].compare(0, 2, "if") == 0) {
+					b.iflag = atoi(a[j].c_str() + 3) ? 1 : 0;
+				}
+				if (a[j].compare(0, 2, "nz") == 0) {
+					b.nzaddr = (int)strtoul(a[j].c_str() + 3, NULL, 16);
+				}
+				for (int i = 0; i < 6; i++) {
+					if (a[j].compare(0, 2, segs[i]) == 0) {
+						b.sreg = i;
+						b.sregval = (UINT16)strtoul(a[j].c_str() + 3, NULL, 16);
+					}
+				}
+				b.text += " " + a[j];
+			}
+		}
+		s_brk.push_back(b);
+		s_brkArmed = true;
+		cpu_stephook = stephook;
+		reply(fmt("armed (%u conditions): %s; 'status' shows when it has paused",
+		          (UINT)s_brk.size(), b.text.c_str()));
+	}
+	else if (c == "histio" && a.size() >= 2) {
+		size_t dash = a[1].find('-');
+		UINT lo = (UINT)strtoul(a[1].c_str(), NULL, 16);
+		UINT hi = (dash != std::string::npos) ? (UINT)strtoul(a[1].c_str() + dash + 1, NULL, 16) : lo;
+		UINT n = (a.size() >= 3) ? (UINT)strtoul(a[2].c_str(), NULL, 10) : 0xffffffffu;
+		reply(histio_text(lo, hi, n));
+	}
+	else if (c == "hist") {
+		UINT n = (a.size() >= 2) ? (UINT)strtoul(a[1].c_str(), NULL, 10) : 200;
+		reply(fmt("%llu recorded%s\n", (unsigned long long)s_histCount, s_histOn ? " (still recording)" : "") +
+		      hist_text(n));
+	}
 	else if (c == "stop") {
+		bool armed = s_brkArmed || s_histOn;
 		s_hotLeft = s_traceLeft = s_ioLeft = s_atapiLeft = 0;
+		s_histOn = s_brkArmed = false;
+		s_brk.clear();
 		cpu_stephook = NULL;
-		if (!s_hotWait && !s_traceWait && !s_ioWait && !s_atapiWait) {
-			reply("nothing running");
+		if (s_irqWait) {
+			s_irqLen = std::max((UINT32)(emuclock() - s_irqStart), (UINT32)1);	/* counts so far */
+		}
+		if (!s_hotWait && !s_traceWait && !s_ioWait && !s_atapiWait && !s_irqWait) {
+			reply(armed ? "history and break stopped" : "nothing running");
 		}
 	}
 	else if (c == "cd") {
 		reply(cd_text());
+	}
+	else if (c == "snd") {
+		reply(snd_text());
 	}
 	else if (c == "pause") {
 		s_paused = true;
@@ -508,6 +974,7 @@ static void run_command(const std::string &line)
 	}
 	else if (c == "continue" || c == "c") {
 		s_paused = false;
+		s_brkNote.clear();
 		reply("running");
 	}
 	else if (c == "screenshot" && a.size() >= 2) {
@@ -519,11 +986,43 @@ static void run_command(const std::string &line)
 		reply(r == SUCCESS ? "saved" : "failed");
 	}
 	else if (c == "key" && a.size() >= 2) {
-		for (size_t i = 1; i < a.size(); i++) {
+		/* keys are pressed together and held; a trailing "/MS" sets
+		 * the hold time (default 100 ms) */
+		UINT ms = 100;
+		size_t n = a.size();
+		if (a[n - 1][0] == '/') {
+			ms = (UINT)strtoul(a[n - 1].c_str() + 1, NULL, 10);
+			n--;
+		}
+		release_keys(true);
+		auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+		for (size_t i = 1; i < n; i++) {
 			REG8 k = (REG8)strtoul(a[i].c_str(), NULL, 16);
 			keystat_keydown(k);
-			keystat_keyup(k);
+			s_keyRelease.push_back(std::make_pair(k, until));
 		}
+		reply("ok");
+	}
+	else if (c == "move" && a.size() >= 3) {
+		mousemng_onmove(atoi(a[1].c_str()), atoi(a[2].c_str()));
+		reply("ok");
+	}
+	else if (c == "click") {
+		/* click [l|r] [/MS]: hold the button for MS (default 100) */
+		int right = (a.size() >= 2 && a[1] == "r") ? 1 : 0;
+		UINT ms = 100;
+		if (a.size() >= 2 && a[a.size() - 1][0] == '/') {
+			ms = (UINT)strtoul(a[a.size() - 1].c_str() + 1, NULL, 10);
+		}
+		release_keys(true);
+		if (right) {
+			mousemng_onright(TRUE);
+		}
+		else {
+			mousemng_onleft(TRUE);
+		}
+		s_btnRelease.push_back(std::make_pair(right,
+		                       std::chrono::steady_clock::now() + std::chrono::milliseconds(ms)));
 		reply("ok");
 	}
 	else {
@@ -579,6 +1078,7 @@ bool dbgmon_poll(void)
 		}
 		run_command(cmd);
 	}
+	release_keys(false);
 	finish_collectors();
 	return s_paused;
 }

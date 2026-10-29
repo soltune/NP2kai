@@ -21,6 +21,9 @@ enum {
 	PIC_OCW3_ESMM	= 0x40
 };
 
+/* debug monitor: sees interrupt requests (delivered 0) and deliveries (1) when set */
+void (*pic_hook)(REG8 irq, int delivered) = NULL;
+
 #if defined(NP2_WIN)
 static int pic_cs_initialized = 0;
 static CRITICAL_SECTION pic_cs;
@@ -191,6 +194,9 @@ void pic_irq(void) {												// ver0.78
 //			TRACEOUT(("hardware-int %.2x", (p->pi[1].icw[1] & 0xf8) | num));
 			intrtmp = (p->pi[1].icw[1] & 0xf8) | num;
 			pic_leave_criticalsection();
+			if (pic_hook) {
+				(*pic_hook)((REG8)(8 + num), 1);
+			}
 			CPU_INTERRUPT((REG8)intrtmp, 0);
 		}else{
 			pic_leave_criticalsection();
@@ -205,6 +211,9 @@ void pic_irq(void) {												// ver0.78
 //		TRACEOUT(("hardware-int %.2x [%.4x:%.4x]", (p->pi[0].icw[1] & 0xf8) | num, CPU_CS, CPU_IP));
 		intrtmp = (p->pi[0].icw[1] & 0xf8) | num;
 		pic_leave_criticalsection();
+		if (pic_hook) {
+			(*pic_hook)(num, 1);
+		}
 		CPU_INTERRUPT((REG8)intrtmp, 0);
 	}else{
 		pic_leave_criticalsection();
@@ -231,6 +240,9 @@ void pic_setirq(REG8 irq) {
 	PICITEM	pi;
 	REG8	bit;
 	
+	if (pic_hook) {
+		(*pic_hook)(irq, 0);
+	}
 	pic_enter_criticalsection();
 	pi = pic.pi;
 	bit = 1 << (irq & 7);
