@@ -40,6 +40,13 @@ void  soundmng_reset(void);
 void  soundmng_play(void);
 void  soundmng_stop(void);
 void  soundmng_sync(void);
+/* audio queued for the device plus made by the core and not queued yet */
+UINT  soundmng_buffered(void);
+/* for the frame loop: -1 the audio is running low (start the next frame
+ * now), 1 it holds more than the buffer delay (wait), 0 either way */
+int   soundmng_pace(void);
+extern UINT soundmng_aheadblocks;	/* debug monitor counters */
+extern UINT soundmng_underruns;
 void  soundmng_setreverse(BOOL reverse);
 void  soundmng_setvolume(int volume);
 
@@ -53,6 +60,8 @@ BRESULT soundmng_pcmload(UINT num, const char *filename);
 void    soundmng_pcmvolume(UINT num, int volume);
 
 extern int pcm_volume_default;
+/* debug monitor: each block as it is queued for the device (S16 stereo) */
+extern void (*soundmng_hook)(const SINT16 *pcm, UINT frames);
 
 #if defined(VERMOUTH_LIB)
 #include "sound/vermouth/vermouth.h"
@@ -71,6 +80,8 @@ extern MIDIMOD vermouth_module;
 #define soundmng_play()
 #define soundmng_stop()
 #define soundmng_sync()
+#define soundmng_buffered()             0
+#define soundmng_pace()                 0
 #define soundmng_setreverse(reverse)
 
 #define soundmng_pcmplay(num, loop)

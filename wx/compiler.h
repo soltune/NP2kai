@@ -62,6 +62,9 @@
 #define SUPPORT_SCREENSIZE
 #define USE_SDL_JOYSTICK
 #define SUPPORT_WAVEREC
+/* the sound stream keeps up to this many ms made at their emulated time
+ * beyond one block (see wx/soundmng.cpp) */
+#define SOUNDRESERVE     100
 
 /* path for config */
 #define NP2_WX_CONFIGDIR ".config"

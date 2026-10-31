@@ -70,6 +70,12 @@ static struct {
 static SDL_AudioStream *audio_st = NULL;
 static BOOL  opened     = FALSE;
 static UINT  opna_frame = 0;
+static UINT  block_frames = 0;	/* opna_frame in stereo frames */
+static UINT  out_rate     = 0;
+static volatile UINT take_frames = 0;	/* the most the device has asked for at once */
+static volatile UINT take_count = 0;	/* device requests so far */
+UINT soundmng_aheadblocks = 0;		/* blocks rendered ahead (the device was about to run dry) */
+UINT soundmng_underruns = 0;		/* device requests the queue could not fill */
 
 static BRESULT nosound_setup(void);
 static BRESULT sdlaudio_setup(void);
@@ -94,11 +100,20 @@ static void soundmng_pcmdestroy(void);
 #define PCM_VOULE_DEFAULT 25
 #endif
 int pcm_volume_default = PCM_VOULE_DEFAULT;
+void (*soundmng_hook)(const SINT16 *pcm, UINT frames) = NULL;
 
 /* ---- buffer management ----
- * soundmng_sync() fills every free block (the core renders ahead as
- * needed), so the queue runs close to full: the output latency is about
- * NSOUNDBUFFER * block, i.e. the configured buffer delay. */
+ * The core makes each sample at its emulated time (sound_sync) and keeps
+ * what it has made in its stream (SOUNDRESERVE) until soundmng_sync()
+ * queues it here block by block. It renders ahead (sound_pcmlock filling a
+ * block with the current state) only when the device is about to run dry:
+ * rendering ahead takes 86-PCM FIFO data before the program has written
+ * the next part, and holds SSG/DAC levels that a timer interrupt is still
+ * changing. A frame of emulated time is made in a burst, so the audio
+ * buffered here and in the stream swings by one frame; soundmng_pace()
+ * lets the frame loop start frames so that what is left when a frame
+ * starts, which is the output latency, stays near the configured buffer
+ * delay (NSOUNDBUFFER blocks). */
 #ifndef NSOUNDBUFFER
 #define NSOUNDBUFFER 16
 #endif
@@ -226,6 +241,9 @@ UINT soundmng_create(UINT rate, UINT bufmsec)
 #endif
 	samples = calc_blocksize(samples);
 	opna_frame = samples * 2 * sizeof(SINT16);
+	block_frames = samples;
+	out_rate = rate;
+	take_frames = 0;
 
 	if ((*snddrv.drvinit)(rate, samples) != SUCCESS) {
 		audio_st = NULL;
@@ -298,21 +316,45 @@ void soundmng_deinitialize(void)
 	buffer_destroy();
 }
 
+/* frames queued for the device (call with the driver locked) */
+static UINT queued_frames(void)
+{
+	struct sndbuf *sndbuf;
+	UINT bytes = 0;
+	for (sndbuf = SNDBUF_FILLED_QUEUE_FIRST(); sndbuf; sndbuf = sndbuf->next)
+		bytes += sndbuf->remain;
+	return bytes / (2 * sizeof(SINT16));
+}
+
+/* below this the next device request may find the queue empty */
+static UINT lowwater_frames(void)
+{
+	return MAX(take_frames, out_rate * 3 / 1000) + block_frames;
+}
+
 void soundmng_sync(void)
 {
 	struct sndbuf *sndbuf;
 	const SINT32  *pcm;
 
 	if (opened) {
-		/* fill every free block: with short blocks a single block per
-		 * call can be less than one device I/O period */
+		/* queue every block the core has finished (with short blocks a
+		 * single block per call can be less than one device I/O period);
+		 * render ahead only to keep the device from running dry */
 		sounddrv_lock();
 		while ((sndbuf = SNDBUF_FREELIST_FIRST()) != NULL) {
+			if (sound_pcmready() < block_frames) {
+				if (queued_frames() >= lowwater_frames())
+					break;
+				soundmng_aheadblocks++;
+			}
 			SNDBUF_FREELIST_REMOVE_HEAD();
 			sounddrv_unlock();
 			pcm = sound_pcmlock();
 			if (pcm) {
 				(*fnmix)((SINT16 *)sndbuf->buf, pcm, opna_frame);
+				if (soundmng_hook)
+					(*soundmng_hook)((const SINT16 *)sndbuf->buf, opna_frame / (2 * sizeof(SINT16)));
 			}
 			sound_pcmunlock(pcm);
 			sndbuf->remain = sndbuf->size;
@@ -322,6 +364,45 @@ void soundmng_sync(void)
 		}
 		sounddrv_unlock();
 	}
+}
+
+UINT soundmng_buffered(void)
+{
+	UINT frames;
+	if (!opened)
+		return 0;
+	sounddrv_lock();
+	frames = queued_frames();
+	sounddrv_unlock();
+	return frames + sound_pcmready();
+}
+
+int soundmng_pace(void)
+{
+	static UINT   lastcount = 0;
+	static UINT32 lasttick = 0;
+	UINT32 now = GETTICK();
+	UINT level, target, band;
+
+	if (!opened || !take_frames)	/* no device, or it has not started taking */
+		return 0;
+	if (take_count != lastcount) {
+		lastcount = take_count;
+		lasttick = now;
+	} else if (now - lasttick > 100) {
+		return 0;			/* the device has stopped taking: the frame clock alone */
+	}
+	level  = soundmng_buffered();
+	band   = MAX(take_frames, out_rate * 4 / 1000) / 2;
+	/* the buffer delay, but high enough that a frame starting at the bottom
+	 * of the band, just after a device request, still finds more than the
+	 * next request queued (the level drops a whole request at a time) */
+	target = MAX(block_frames * NSOUNDBUFFER, lowwater_frames() + band + take_frames);
+	if (level + band < target)
+		return -1;
+	if (level > target + band)
+		return 1;
+	return 0;
 }
 
 void soundmng_setreverse(BOOL reverse)
@@ -483,6 +564,9 @@ static void sdlaudio_callback(void *userdata, SDL_AudioStream *stream,
 	(void)userdata;
 	(void)total_amount;
 
+	if ((UINT)additional_amount / (2 * sizeof(SINT16)) > take_frames)
+		take_frames = (UINT)additional_amount / (2 * sizeof(SINT16));
+	take_count++;
 	sndbuf_lock();
 	while (additional_amount > 0) {
 		sndbuf = SNDBUF_FILLED_QUEUE_FIRST();
@@ -573,8 +657,11 @@ static OSStatus coreaudio_render(void *refcon, AudioUnitRenderActionFlags *flags
 	struct sndbuf *sndbuf;
 	char *dst = (char *)io->mBuffers[0].mData;
 	UINT  want = io->mBuffers[0].mDataByteSize;
-	(void)refcon; (void)ts; (void)bus; (void)nframes;
+	(void)refcon; (void)ts; (void)bus;
 
+	if (nframes > take_frames)
+		take_frames = nframes;
+	take_count++;
 	os_unfair_lock_lock(&ca_lock);
 	while (want > 0) {
 		sndbuf = SNDBUF_FILLED_QUEUE_FIRST();
@@ -593,6 +680,7 @@ static OSStatus coreaudio_render(void *refcon, AudioUnitRenderActionFlags *flags
 
 	if (want > 0) {
 		/* underrun: pad with silence */
+		soundmng_underruns++;
 		memset(dst, 0, want);
 		if (want == io->mBuffers[0].mDataByteSize)
 			*flags |= kAudioUnitRenderAction_OutputIsSilence;

@@ -476,13 +476,29 @@ static void autokey_exec(void)
 static UINT framecnt = 0;
 static UINT waitcnt  = 0;
 static UINT framemax = 1;
+static bool paceheld = false;
 
+/* The audio left when a frame starts is the output latency (the core makes
+ * each frame's samples in a burst, at their emulated time). The frame clock
+ * and the audio device clock differ a little, so frames start early when
+ * the audio runs low and late when it holds more than the buffer delay;
+ * the frame clock then restarts from that frame. */
 static void processwait(UINT cnt)
 {
-	if (timing_getcount() >= cnt) {
+	BOOL timeup = (timing_getcount() >= cnt);
+	int  pace = (np2oscfg.NOWAIT || np2cfg.emuspeed != 100) ? 0 : soundmng_pace();
+
+	if ((pace < 0) || (timeup && pace == 0)) {
+		if (pace < 0 || paceheld) {
+			timing_reset();
+		}
+		paceheld = false;
 		timing_setcount(0);
 		framecnt = 0;
 	} else {
+		if (timeup) {
+			paceheld = true;
+		}
 		/* keep the audio queue topped up between frames, so a short
 		 * buffer delay does not run dry while the thread sleeps */
 		soundmng_sync();

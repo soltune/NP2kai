@@ -40,6 +40,7 @@ void sound_sync(void);
 
 const SINT32 *sound_pcmlock(void);
 void sound_pcmunlock(const SINT32 *hdl);
+UINT sound_pcmready(void);
 
 #if defined(SUPPORT_WAVEREC)
 BRESULT sound_recstart(const OEMCHAR *filename);

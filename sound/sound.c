@@ -426,7 +426,8 @@ void sound_pcmunlock(const SINT32 *hdl) {
 			//CopyMemory(sndstream.buffer,
 			//			sndstream.buffer + (sndstream.samples * 2),
 			//									(sndstream.samples * 2));
-			CopyMemory(sndstream.buffer,
+			// 持ち越しがブロックより長いと領域が重なる
+			memmove(sndstream.buffer,
 						sndstream.buffer + (sndstream.samples * 2),
 												leng * 2 * sizeof(SINT32));
 		}
@@ -436,4 +437,17 @@ void sound_pcmunlock(const SINT32 *hdl) {
 		SNDCSEC_LEAVE;
 		locks--;
 	}
+}
+
+/**
+ * 作り終えて sound_pcmlock() にまだ渡していないサンプル数
+ * （sound_pcmlock() は 1 ブロック分そろっていれば先行生成しない）
+ */
+UINT sound_pcmready(void)
+{
+	if (sndstream.buffer == NULL)
+	{
+		return 0;
+	}
+	return sndstream.samples + sndstream.reserve - sndstream.remain;
 }
