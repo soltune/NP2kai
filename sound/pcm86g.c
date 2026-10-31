@@ -39,6 +39,9 @@ static void trace_fmt_ex(const char* fmt, ...)
 
 #define	BYVOLUME(p, s)	((((s) >> 6) * (p)->volume) >> (PCM86_DIVBIT + 4))
 
+	PCM86DBG	pcm86dbg;
+	void		(*pcm86gen_hook)(const SINT32 *pcm, UINT count) = NULL;
+
 
 static void pcm86mono16(PCM86 pcm86, SINT32 *lpBuffer, UINT nCount)
 {
@@ -103,6 +106,7 @@ static void pcm86mono16(PCM86 pcm86, SINT32 *lpBuffer, UINT nCount)
 	return;
 
 pm16_bufempty:
+	pcm86dbg.underrun++;
 	pcm86->realbuf += 2;
 	pcm86->divremain = 0;
 	pcm86->smp = 0;
@@ -186,6 +190,7 @@ static void pcm86stereo16(PCM86 pcm86, SINT32 *lpBuffer, UINT nCount)
 	return;
 
 ps16_bufempty:
+	pcm86dbg.underrun++;
 	pcm86->realbuf += 4;
 	pcm86->divremain = 0;
 	pcm86->smp_l = 0;
@@ -257,6 +262,7 @@ static void pcm86mono8(PCM86 pcm86, SINT32 *lpBuffer, UINT nCount)
 	return;
 
 pm8_bufempty:
+	pcm86dbg.underrun++;
 	pcm86->realbuf += 1;
 	pcm86->divremain = 0;
 	pcm86->smp = 0;
@@ -339,12 +345,70 @@ static void pcm86stereo8(PCM86 pcm86, SINT32 *lpBuffer, UINT nCount)
 	return;
 
 pm8_bufempty:
+	pcm86dbg.underrun++;
 	pcm86->realbuf += 2;
 	pcm86->divremain = 0;
 	pcm86->smp_l = 0;
 	pcm86->smp_r = 0;
 	pcm86->lastsmp_l = 0;
 	pcm86->lastsmp_r = 0;
+}
+
+static void pcm86gen_mix(PCM86 pcm86, SINT32 *lpBuffer, UINT nCount)
+{
+	switch (pcm86->dactrl & 0x70)
+	{
+	case 0x00:						/* 16bit-none */
+		break;
+
+	case 0x10:						/* 16bit-right */
+		pcm86mono16(pcm86, lpBuffer + 1, nCount);
+		break;
+
+	case 0x20:						/* 16bit-left */
+		pcm86mono16(pcm86, lpBuffer, nCount);
+		break;
+
+	case 0x30:						/* 16bit-stereo */
+		pcm86stereo16(pcm86, lpBuffer, nCount);
+		break;
+
+	case 0x40:						/* 8bit-none */
+		break;
+
+	case 0x50:						/* 8bit-right */
+		pcm86mono8(pcm86, lpBuffer + 1, nCount);
+		break;
+
+	case 0x60:						/* 8bit-left */
+		pcm86mono8(pcm86, lpBuffer, nCount);
+		break;
+
+	case 0x70:						/* 8bit-stereo */
+		pcm86stereo8(pcm86, lpBuffer, nCount);
+		break;
+	}
+}
+
+/* フックがあるときは 86PCM の分だけを別に作ってから足す（結果は同じ） */
+static void pcm86gen_mixhook(PCM86 pcm86, SINT32 *lpBuffer, UINT nCount)
+{
+	SINT32 tmp[2 * 512];
+	UINT i;
+
+	while (nCount)
+	{
+		UINT n = MIN(nCount, 512);
+		ZeroMemory(tmp, n * 2 * sizeof(tmp[0]));
+		pcm86gen_mix(pcm86, tmp, n);
+		for (i = 0; i < n * 2; i++)
+		{
+			lpBuffer[i] += tmp[i];
+		}
+		(*pcm86gen_hook)(tmp, n);
+		lpBuffer += n * 2;
+		nCount -= n;
+	}
 }
 
 void SOUNDCALL pcm86gen_getpcm(PCM86 pcm86, SINT32 *lpBuffer, UINT nCount)
@@ -354,41 +418,21 @@ void SOUNDCALL pcm86gen_getpcm(PCM86 pcm86, SINT32 *lpBuffer, UINT nCount)
 #if defined(SUPPORT_MULTITHREAD)
 		pcm86cs_enter_criticalsection();
 #endif
-		switch (pcm86->dactrl & 0x70)
+		if (pcm86gen_hook)
 		{
-		case 0x00:						/* 16bit-none */
-			break;
-
-		case 0x10:						/* 16bit-right */
-			pcm86mono16(pcm86, lpBuffer + 1, nCount);
-			break;
-
-		case 0x20:						/* 16bit-left */
-			pcm86mono16(pcm86, lpBuffer, nCount);
-			break;
-
-		case 0x30:						/* 16bit-stereo */
-			pcm86stereo16(pcm86, lpBuffer, nCount);
-			break;
-
-		case 0x40:						/* 8bit-none */
-			break;
-
-		case 0x50:						/* 8bit-right */
-			pcm86mono8(pcm86, lpBuffer + 1, nCount);
-			break;
-
-		case 0x60:						/* 8bit-left */
-			pcm86mono8(pcm86, lpBuffer, nCount);
-			break;
-
-		case 0x70:						/* 8bit-stereo */
-			pcm86stereo8(pcm86, lpBuffer, nCount);
-			break;
+			pcm86gen_mixhook(pcm86, lpBuffer, nCount);
+		}
+		else
+		{
+			pcm86gen_mix(pcm86, lpBuffer, nCount);
 		}
 #if defined(SUPPORT_MULTITHREAD)
 		pcm86cs_leave_criticalsection();
 #endif
 		pcm86gen_checkbuf(pcm86, nCount);
+	}
+	else if ((nCount) && (pcm86gen_hook))
+	{
+		(*pcm86gen_hook)(NULL, nCount);
 	}
 }

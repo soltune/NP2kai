@@ -180,6 +180,7 @@ void IOOUTCALL pcm86_oa46c(UINT port, REG8 val) {
 #if 1
 		g_pcm86.realbuf -= 4;
 		g_pcm86.readpos = (g_pcm86.readpos + 4) & PCM86_BUFMSK;
+		pcm86dbg.overflow += 4;
 #else
 		g_pcm86.realbuf &= 3;				// align4決めウチ
 		g_pcm86.realbuf += PCM86_REALBUFSIZE - 4;

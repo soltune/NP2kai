@@ -44,6 +44,9 @@ void fmboard_extreg(void (*ext)(REG8 enable));
 void fmboard_extenable(REG8 enable);
 
 BOOL fmboard_irqline(REG8 irq);
+/* デバッグモニタ用: 割り込みの要因が立ったとき（source 'A' 'B' = OPNA タイマー、'P' = 86PCM）。
+ * lineup = 線がすでに上がっていたので要求しなかった */
+extern void (*fmboard_irqhook)(REG8 irq, REG8 source, BOOL lineup);
 
 void fmboard_construct(void);
 void fmboard_destruct(void);

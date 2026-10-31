@@ -23,6 +23,8 @@
 #include <fdd/sxsi.h>
 #include <vram/scrnsave.h>
 #include <sound/fmboard.h>
+#include <sound/sound.h>
+#include "soundmng.h"
 
 #include <string>
 #include <vector>
@@ -263,6 +265,16 @@ static std::string snd_text(void)
 		s += fmt("pcm86: irq %u, fifo %02x, irqflag %u, irqline %u, irqseen %u, irqfill %u, reqirq %u, virbuf %d, fifosize %d, event %s\n",
 		         g_pcm86.irq, g_pcm86.fifo, g_pcm86.irqflag, g_pcm86.irqline, g_pcm86.irqseen, g_pcm86.irqfill,
 		         g_pcm86.reqirq, g_pcm86.virbuf, g_pcm86.fifosize, nevent_iswork(NEVENT_86PCM) ? "scheduled" : "none");
+		s += fmt("pcm86: rate %u Hz, dactrl %02x, vol5 %d, realbuf %d (rescue %d), div %d/%d (out %u Hz), "
+		         "underrun %u, overflow %u bytes, catchup %u, slowdown %u\n",
+		         g_pcm86.rateval / 8, g_pcm86.dactrl, g_pcm86.vol5, g_pcm86.realbuf, g_pcm86.rescue,
+		         g_pcm86.div, g_pcm86.div2, soundcfg.rate, pcm86dbg.underrun, pcm86dbg.overflow,
+		         pcm86dbg.catchup, pcm86dbg.slowdown);
+	}
+	if (soundcfg.rate) {
+		s += fmt("sound: %.1f ms queued for the device or made and not queued, "
+		         "%u blocks rendered ahead, %u device underruns\n",
+		         soundmng_buffered() * 1000.0 / soundcfg.rate, soundmng_aheadblocks, soundmng_underruns);
 	}
 	for (UINT irq = 0; irq < 16; irq++) {
 		bool used = (g_pcm86.irq == irq);
@@ -551,6 +563,284 @@ static UINT32 emuclock(void)
 	return (UINT32)(CPU_CLOCK + CPU_BASECLOCK - CPU_REMCLOCK);
 }
 
+/* rec: WAV files of what is queued for the device and of the 86-PCM alone,
+ * both at the stream rate, so they line up sample for sample.
+ * pcmlog: a binary log of the 86-PCM ports, of each run of the 86-PCM
+ * generator and of each block queued for the device, with the emulated
+ * clock and the buffer counts (.claude/tools/pcm86log.py reads it). */
+struct WavOut {
+	FILE  *fp;
+	UINT32 frames;
+	UINT32 clipped;
+};
+static WavOut s_recOut = {NULL, 0, 0}, s_recPcm = {NULL, 0, 0};
+
+static void put32(UINT8 *p, UINT32 v)
+{
+	p[0] = (UINT8)v;
+	p[1] = (UINT8)(v >> 8);
+	p[2] = (UINT8)(v >> 16);
+	p[3] = (UINT8)(v >> 24);
+}
+
+static void wav_header(UINT8 *h, UINT32 frames)
+{
+	static const UINT8 fmt16[] = {16, 0, 0, 0, 1, 0, 2, 0};	/* PCM, stereo */
+	memcpy(h, "RIFF", 4);
+	put32(h + 4, 36 + frames * 4);
+	memcpy(h + 8, "WAVEfmt ", 8);
+	memcpy(h + 16, fmt16, 8);
+	put32(h + 24, soundcfg.rate);
+	put32(h + 28, soundcfg.rate * 4);
+	h[32] = 4;
+	h[33] = 0;
+	h[34] = 16;
+	h[35] = 0;
+	memcpy(h + 36, "data", 4);
+	put32(h + 40, frames * 4);
+}
+
+static bool wav_open(WavOut &w, const char *path)
+{
+	UINT8 h[44];
+	w.fp = fopen(path, "wb");
+	w.frames = w.clipped = 0;
+	if (!w.fp) {
+		return false;
+	}
+	wav_header(h, 0);
+	fwrite(h, 1, sizeof(h), w.fp);
+	return true;
+}
+
+static std::string wav_close(WavOut &w, const char *name)
+{
+	if (!w.fp) {
+		return "";
+	}
+	UINT8 h[44];
+	wav_header(h, w.frames);
+	fseek(w.fp, 0, SEEK_SET);
+	fwrite(h, 1, sizeof(h), w.fp);
+	fclose(w.fp);
+	w.fp = NULL;
+	return fmt("%s: %u frames (%.2f s), %u samples clipped\n", name, w.frames,
+	           (double)w.frames / soundcfg.rate, w.clipped);
+}
+
+static void wav_write16(WavOut &w, const SINT16 *pcm, UINT frames)
+{
+	fwrite(pcm, 2 * sizeof(SINT16), frames, w.fp);	/* the host is little-endian */
+	w.frames += frames;
+}
+
+/* pcm = NULL: silence */
+static void wav_write32(WavOut &w, const SINT32 *pcm, UINT frames)
+{
+	SINT16 buf[2 * 512];
+	while (frames) {
+		UINT n = std::min(frames, 512u);
+		for (UINT i = 0; i < n * 2; i++) {
+			SINT32 v = pcm ? pcm[i] : 0;
+			if (v > 32767) {
+				v = 32767;
+				w.clipped++;
+			}
+			else if (v < -32768) {
+				v = -32768;
+				w.clipped++;
+			}
+			buf[i] = (SINT16)v;
+		}
+		wav_write16(w, buf, n);
+		if (pcm) {
+			pcm += n * 2;
+		}
+		frames -= n;
+	}
+}
+
+#pragma pack(push, 1)
+struct PcmLogHead {
+	char   magic[8];	/* "NP2PCMLG" */
+	UINT32 version;		/* 1 */
+	UINT32 outrate;		/* sound stream rate */
+	UINT32 realclock;	/* CPU clocks per second */
+	UINT32 baseclock;
+	UINT32 multiple;
+	UINT8  fifo, dactrl, vol5, pad;	/* 86-PCM state when the log started */
+	SINT32 fifosize, virbuf, realbuf;
+	UINT32 readpos, wrtpos;
+	UINT8  reserved[12];
+};
+struct PcmLogRec {
+	UINT64 clock;	/* emulated CPU clocks since the log started */
+	UINT16 port;	/* I/O port; 0xffff generator run, 0xfffe device block */
+	UINT8  size;	/* I/O width in bytes */
+	UINT8  kind;	/* 0 in, 1 out (logged before the write), 2 generator run,
+	                 * 3 device block (both logged after the fact),
+	                 * 4 frame loop pass (value = soundmng_buffered(), virbuf =
+	                 * blocks rendered ahead so far, realbuf = device underruns),
+	                 * 5 a source of the 86 board's interrupt line came up
+	                 * (port 0xfffc, value = irq | source << 8 ('A' 'B' OPNA
+	                 * timer, 'P' 86-PCM) | 0x10000 when the line was already
+	                 * up so no request was made), 6 PIC request or delivery of
+	                 * that IRQ (port 0xfffb, value = irq | 0x100 when delivered) */
+	UINT32 value;	/* the data; output samples (generator: bit 31 = not playing) */
+	SINT32 virbuf, realbuf;
+	UINT32 readpos;
+	UINT16 wrtpos;
+	UINT16 repeat;	/* identical reads folded into this record, besides itself */
+};
+#pragma pack(pop)
+
+static FILE     *s_pcmlog = NULL;
+static UINT64    s_pcmlogRecs = 0;
+static UINT64    s_clk64 = 0;
+static UINT32    s_clkLast = 0;
+static PcmLogRec s_pend;
+static bool      s_pendOn = false;
+
+static UINT64 clock64(void)
+{
+	UINT32 c = emuclock();
+	s_clk64 += (UINT32)(c - s_clkLast);
+	s_clkLast = c;
+	return s_clk64;
+}
+
+static void pcmlog_flush(void)
+{
+	if (s_pendOn) {
+		fwrite(&s_pend, sizeof(s_pend), 1, s_pcmlog);
+		s_pendOn = false;
+		s_pcmlogRecs++;
+	}
+}
+
+static void pcmlog_rec(UINT port, UINT32 value, int size, int kind)
+{
+	/* polling loops read the same thing over and over */
+	if (kind == 0 && s_pendOn && s_pend.kind == 0 && s_pend.port == port &&
+	    s_pend.value == value && s_pend.repeat < 0xffff) {
+		s_pend.repeat++;
+		return;
+	}
+	pcmlog_flush();
+	s_pend.clock = clock64();
+	s_pend.port = (UINT16)port;
+	s_pend.size = (UINT8)size;
+	s_pend.kind = (UINT8)kind;
+	s_pend.value = value;
+	s_pend.virbuf = g_pcm86.virbuf;
+	s_pend.realbuf = g_pcm86.realbuf;
+	s_pend.readpos = g_pcm86.readpos;
+	s_pend.wrtpos = (UINT16)g_pcm86.wrtpos;
+	s_pend.repeat = 0;
+	s_pendOn = true;
+}
+
+static void pcm86hook(const SINT32 *pcm, UINT count)
+{
+	if (s_recPcm.fp) {
+		wav_write32(s_recPcm, pcm, count);
+	}
+	if (s_pcmlog) {
+		pcmlog_rec(0xffff, count | (pcm ? 0 : 0x80000000u), 0, 2);
+	}
+}
+
+static void outhook(const SINT16 *pcm, UINT frames)
+{
+	if (s_recOut.fp) {
+		wav_write16(s_recOut, pcm, frames);
+	}
+	if (s_pcmlog) {
+		pcmlog_rec(0xfffe, frames, 0, 3);
+	}
+}
+
+static void iohook_all(UINT port, UINT32 dat, int size, int dir)
+{
+	if (s_ioLeft) {
+		iohook(port, dat, size, dir);
+	}
+	/* the 86-PCM, the FM ports of the board at 188h (timer flags and their
+	 * resets) and the PICs (EOI, masks) */
+	if (s_pcmlog && ((port >= 0xa460 && port <= 0xa46f) || (port >= 0x188 && port <= 0x18e) ||
+	                 port == 0x00 || port == 0x02 || port == 0x08 || port == 0x0a)) {
+		pcmlog_rec(port, dat, size, dir);
+	}
+}
+
+static void irqhook86(REG8 irq, REG8 source, BOOL lineup)
+{
+	if (s_pcmlog) {
+		pcmlog_rec(0xfffc, irq | (source << 8) | (lineup ? 0x10000 : 0), 0, 5);
+	}
+}
+
+static bool s_ioWait = false;
+static void update_pichook(void);
+
+/* the I/O, generator and device hooks, for whichever collectors are on */
+static void update_hooks(void)
+{
+	iocore_hook = (s_ioWait || s_pcmlog) ? iohook_all : NULL;
+	pcm86gen_hook = (s_recPcm.fp || s_pcmlog) ? pcm86hook : NULL;
+	soundmng_hook = (s_recOut.fp || s_pcmlog) ? outhook : NULL;
+	fmboard_irqhook = s_pcmlog ? irqhook86 : NULL;
+	update_pichook();
+}
+
+static std::string pcmlog_start(const char *path)
+{
+	if (s_pcmlog) {
+		return "already logging ('pcmlog stop' first)";
+	}
+	s_pcmlog = fopen(path, "wb");
+	if (!s_pcmlog) {
+		return "cannot open the file";
+	}
+	setvbuf(s_pcmlog, NULL, _IOFBF, 1 << 20);
+	PcmLogHead h;
+	memset(&h, 0, sizeof(h));
+	memcpy(h.magic, "NP2PCMLG", 8);
+	h.version = 1;
+	h.outrate = soundcfg.rate;
+	h.realclock = pccore.realclock;
+	h.baseclock = pccore.baseclock;
+	h.multiple = pccore.multiple;
+	h.fifo = g_pcm86.fifo;
+	h.dactrl = g_pcm86.dactrl;
+	h.vol5 = (UINT8)g_pcm86.vol5;
+	h.fifosize = g_pcm86.fifosize;
+	h.virbuf = g_pcm86.virbuf;
+	h.realbuf = g_pcm86.realbuf;
+	h.readpos = g_pcm86.readpos;
+	h.wrtpos = g_pcm86.wrtpos;
+	fwrite(&h, sizeof(h), 1, s_pcmlog);
+	s_pcmlogRecs = 0;
+	s_clk64 = 0;
+	s_clkLast = emuclock();
+	s_pendOn = false;
+	update_hooks();
+	return "logging";
+}
+
+static std::string pcmlog_stop(void)
+{
+	if (!s_pcmlog) {
+		return "not logging";
+	}
+	pcmlog_flush();
+	fclose(s_pcmlog);
+	s_pcmlog = NULL;
+	update_hooks();
+	return fmt("%llu records, %.2f s of emulated time", (unsigned long long)s_pcmlogRecs,
+	           (double)s_clk64 / pccore.realclock);
+}
+
 /* irqlog: the last requests and deliveries, with the function that called
  * pic_setirq and whether the IRQ was already pending or in service */
 struct IrqLogEntry {
@@ -574,6 +864,9 @@ static UINT64 s_irqBusyCount = 0;
 
 static void pichook(REG8 irq, int delivered)
 {
+	if (s_pcmlog && irq == g_pcm86.irq) {
+		pcmlog_rec(0xfffb, irq | (delivered ? 0x100 : 0), 0, 6);
+	}
 	if (s_irqWait && irq < 16) {
 		(delivered ? s_irqDel : s_irqReq)[irq]++;
 	}
@@ -602,6 +895,12 @@ static void pichook(REG8 irq, int delivered)
 			s_irqBusyCount++;
 		}
 	}
+}
+
+/* pic_hook serves irq, irqlog and pcmlog */
+static void update_pichook(void)
+{
+	pic_hook = (s_irqWait || s_irqLogOn || s_pcmlog) ? pichook : NULL;
 }
 
 static std::string irqlog_lines(const IrqLogEntry *ring, UINT size, UINT pos, UINT n)
@@ -697,7 +996,7 @@ static std::string join(const std::vector<std::string> &v)
 }
 
 /* deferred replies are sent from dbgmon_poll once the collector is done */
-static bool s_hotWait = false, s_traceWait = false, s_ioWait = false, s_atapiWait = false;
+static bool s_hotWait = false, s_traceWait = false, s_atapiWait = false;
 
 static void finish_collectors(void)
 {
@@ -711,7 +1010,7 @@ static void finish_collectors(void)
 	}
 	if (s_ioWait && !s_ioLeft) {
 		s_ioWait = false;
-		iocore_hook = NULL;
+		update_hooks();
 		reply(join(s_io));
 	}
 	if (s_atapiWait && !s_atapiLeft) {
@@ -721,9 +1020,7 @@ static void finish_collectors(void)
 	}
 	if (s_irqWait && (UINT32)(emuclock() - s_irqStart) >= s_irqLen) {
 		s_irqWait = false;
-		if (!s_irqLogOn) {
-			pic_hook = NULL;
-		}
+		update_pichook();
 		reply(irq_text());
 	}
 	if (s_brkHit) {
@@ -762,6 +1059,13 @@ static const char *s_help =
 	"stop                     end the collectors now and send what they have\n"
 	"cd                       CD-DA state of the IDE CD-ROM drives\n"
 	"snd                      sound board interrupt sources (OPNA timers, 86-PCM) and the PIC\n"
+	"rec out|pcm86 FILE.wav   record the blocks queued for the device / the 86-PCM output alone\n"
+	"                         (stream rate, 16-bit stereo; they line up sample for sample)\n"
+	"rec ideal FILE.wav       the core's recorder: each sample made at its emulated time (the\n"
+	"                         device gets held samples meanwhile; for comparison only)\n"
+	"rec stop                 close the recordings\n"
+	"pcmlog FILE | stop       binary log of the 86-PCM ports, generator runs and device blocks\n"
+	"                         with the emulated clock (.claude/tools/pcm86log.py reads it)\n"
 	"pause | continue         stop or resume emulation\n"
 	"screenshot FILE.bmp      save the emulated screen as it is drawn now\n"
 	"key HEX [HEX...] [/MS]   press PC-98 key codes together, release after MS (default 100)\n"
@@ -843,7 +1147,7 @@ static void run_command(const std::string &line)
 		s_ioCollapse = !(a.size() >= 4 && a[3] == "all");
 		s_io.clear();
 		s_ioWait = true;
-		iocore_hook = iohook;
+		update_hooks();
 	}
 	else if (c == "atapi") {
 		s_atapiLeft = (a.size() >= 2) ? (UINT32)strtoul(a[1].c_str(), NULL, 10) : 50;
@@ -858,7 +1162,7 @@ static void run_command(const std::string &line)
 		s_irqLen = (UINT32)(std::min(std::max(sec, 0.01) * pccore.realclock, 4.0e9));
 		s_irqStart = emuclock();
 		s_irqWait = true;
-		pic_hook = pichook;
+		update_pichook();
 	}
 	else if (c == "irqlog") {
 		if (a.size() >= 2 && a[1] == "on") {
@@ -868,14 +1172,12 @@ static void run_command(const std::string &line)
 			s_irqBusyPos = 0;
 			s_irqBusyCount = 0;
 			s_irqLogOn = true;
-			pic_hook = pichook;
+			update_pichook();
 			reply("logging");
 		}
 		else if (a.size() >= 2 && a[1] == "off") {
 			s_irqLogOn = false;
-			if (!s_irqWait) {
-				pic_hook = NULL;
-			}
+			update_pichook();
 			reply("off");
 		}
 		else {
@@ -967,6 +1269,37 @@ static void run_command(const std::string &line)
 	}
 	else if (c == "snd") {
 		reply(snd_text());
+	}
+	else if (c == "rec" && a.size() >= 2 && a[1] == "stop") {
+		std::string r = wav_close(s_recOut, "out") + wav_close(s_recPcm, "pcm86");
+		if (sound_isrecording()) {
+			sound_recstop();
+			r += "ideal: closed\n";
+		}
+		update_hooks();
+		reply(r.empty() ? std::string("not recording") : r);
+	}
+	else if (c == "rec" && a.size() >= 3 && a[1] == "ideal") {
+		/* the core's own recorder: every sample made at its emulated time,
+		 * nothing rendered ahead or dropped (the device then gets held samples) */
+		reply(sound_recstart(a[2].c_str()) == SUCCESS ? fmt("recording at %u Hz", soundcfg.rate)
+		                                               : std::string("cannot open the file"));
+	}
+	else if (c == "rec" && a.size() >= 3 && (a[1] == "out" || a[1] == "pcm86")) {
+		WavOut &w = (a[1] == "out") ? s_recOut : s_recPcm;
+		if (w.fp) {
+			reply("already recording ('rec stop' first)");
+		}
+		else if (!wav_open(w, a[2].c_str())) {
+			reply("cannot open the file");
+		}
+		else {
+			update_hooks();
+			reply(fmt("recording at %u Hz", soundcfg.rate));
+		}
+	}
+	else if (c == "pcmlog" && a.size() >= 2) {
+		reply(a[1] == "stop" ? pcmlog_stop() : pcmlog_start(a[1].c_str()));
 	}
 	else if (c == "pause") {
 		s_paused = true;
@@ -1080,6 +1413,11 @@ bool dbgmon_poll(void)
 	}
 	release_keys(false);
 	finish_collectors();
+	if (s_pcmlog) {
+		pcmlog_rec(0xfffd, soundmng_buffered(), 0, 4);
+		s_pend.virbuf = (SINT32)soundmng_aheadblocks;
+		s_pend.realbuf = (SINT32)soundmng_underruns;
+	}
 	return s_paused;
 }
 

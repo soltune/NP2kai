@@ -130,6 +130,14 @@ typedef struct {
 	UINT	vol;
 } PCM86CFG;
 
+/* デバッグ用の計数（デバッグモニタの snd で表示） */
+typedef struct {
+	UINT32	underrun;			/*!< 生成側のデータが尽きて出力を途中で打ち切った回数 */
+	UINT32	overflow;			/*!< 生成側のバッファがあふれて捨てたバイト数 */
+	UINT32	catchup;			/*!< pcm86gen_checkbuf が virbuf を生成側に合わせて減らした回数 */
+	UINT32	slowdown;			/*!< pcm86gen_checkbuf が virbuf を増やした回数（生成側が大きく遅れたとき） */
+} PCM86DBG;
+
 
 #ifdef __cplusplus
 extern "C"
@@ -137,6 +145,9 @@ extern "C"
 #endif
 
 extern const UINT pcm86rate8[];
+extern PCM86DBG pcm86dbg;
+/* デバッグモニタ用: 86PCM だけの出力（ステレオ、soundcfg.rate）。鳴っていない間は pcm = NULL */
+extern void (*pcm86gen_hook)(const SINT32 *pcm, UINT count);
 
 void pcm86_cb(NEVENTITEM item);
 

@@ -98,6 +98,10 @@ void fmport_a(NEVENTITEM item)
 			opna->s.status |= 0x01;
 			intreq = TRUE;
 		}
+		if ((intreq) && (fmboard_irqhook))
+		{
+			(*fmboard_irqhook)(opna->s.irq, 'A', lineup);
+		}
 		if ((intreq) && (!lineup) && (opna->s.irq != 0xff))
 		{
 			pic_setirq(opna->s.irq);
@@ -140,6 +144,10 @@ void fmport_b(NEVENTITEM item)
 		{
 			opna->s.status |= 0x02;
 			intreq = TRUE;
+		}
+		if ((intreq) && (fmboard_irqhook))
+		{
+			(*fmboard_irqhook)(opna->s.irq, 'B', lineup);
 		}
 		if ((intreq) && (!lineup) && (opna->s.irq != 0xff))
 		{

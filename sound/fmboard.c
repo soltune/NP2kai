@@ -151,6 +151,8 @@ void fmboard_extenable(REG8 enable) {
 	}
 }
 
+void (*fmboard_irqhook)(REG8 irq, REG8 source, BOOL lineup) = NULL;
+
 /**
  * Level of a sound interrupt line
  * The timer flags of the OPNAs and the FIFO interrupt of the 86-PCM that use

@@ -152,6 +152,10 @@ void pcm86_cb(NEVENTITEM item)
 		{
 			// 割り込み線がすでに上がっていれば新しい割り込み要求にはならない (fmboard_irqline)
 			BOOL lineup = fmboard_irqline(pcm86->irq);
+			if (fmboard_irqhook)
+			{
+				(*fmboard_irqhook)(pcm86->irq, 'P', lineup);
+			}
 			pcm86->reqirq = 0;
 			pcm86->irqflag = 1;
 			pcm86->irqline = 1;
@@ -401,6 +405,7 @@ void SOUNDCALL pcm86gen_checkbuf(PCM86 pcm86, UINT nCount)
 			//TRACEOUT(("CRITCAL buf: real %d, vir %d, (FIFOSIZE: %d) FORCE IRQ", pcm86->realbuf, pcm86->virbuf, pcm86->fifosize));
 			bufs &= ~3;
 			pcm86->virbuf += bufs;
+			pcm86dbg.catchup++;
 			// nevent_setでデッドロックする可能性があるので割り込みはしない
 		}
 		//TRACEOUT(("buf: real %d, vir %d, (FIFOSIZE: %d) FORCE IRQ", pcm86->realbuf, pcm86->virbuf, pcm86->fifosize));
@@ -448,6 +453,7 @@ void SOUNDCALL pcm86gen_checkbuf(PCM86 pcm86, UINT nCount)
 			//	//TRACEOUT(("v %d", vbufunferflag));
 			//}
 			pcm86->virbuf += (pcm86->realbuf - (pcm86->virbuf - pcm86->fifosize * 3)) / 8;
+			pcm86dbg.slowdown++;
 			TRACEOUT(("ADJUST!"));
 		}
 		//else
