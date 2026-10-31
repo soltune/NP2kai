@@ -201,7 +201,9 @@ void IOOUTCALL pcm86_oa46c(UINT port, REG8 val) {
 	if (g_pcm86.virbuf > g_pcm86.fifosize * 2 || g_pcm86.virbuf >= PCM86_LOGICALBUF) {
 		addClock = datawriteirqwait;
 	}
-	g_pcm86.lastclockforwait = CPU_CLOCK + CPU_BASECLOCK - CPU_REMCLOCK + addClock;
+	// 待ちは datawriteirqwait - addClock（上の 2 つのコメントのとおり）。以前は addClock を足していたので逆に長くなり、
+	// しきい値の割り込みでフラグが隠れて、補充が次の FM タイマー割り込みまで遅れた（とらぶるあうとさいだーず）
+	g_pcm86.lastclockforwait = (UINT64)(UINT32)(CPU_CLOCK + CPU_BASECLOCK - CPU_REMCLOCK) - addClock;
 #else
 	if (g_pcm86.virbuf < PCM86_LOGICALBUF) {
 		g_pcm86.virbuf++;
